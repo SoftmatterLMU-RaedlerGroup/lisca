@@ -1,0 +1,46 @@
+[project]
+name = "lisca-py"
+version = "0.1.0"
+description = "Lisca Python CLI"
+requires-python = ">=3.12"
+dependencies = [
+  "typer>=0.12",
+  "numpy>=1.26",
+  "tifffile>=2024.1",
+  "zarr>=3,<4",
+  "nd2>=0.10",
+  "imageio>=2.31",
+  "imageio-ffmpeg>=0.4",
+  "matplotlib>=3.8",
+  "pandas>=2.0",
+  "Pillow>=10.0",
+  "torch>=2.0",
+  "transformers>=4.40",
+  "cellpose>=4.0",
+  "cellSAM @ git+https://github.com/vanvalenlab/cellSAM.git",
+  "scipy>=1.11",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/lisca_py"]
+
+[tool.uv]
+package = true
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu130", marker = "sys_platform != 'darwin'" }
+
+[project.scripts]
+lisca-py = "lisca_py.cli.main:app"
