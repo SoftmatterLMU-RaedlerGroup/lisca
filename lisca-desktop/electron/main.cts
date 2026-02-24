@@ -14,7 +14,8 @@ import initSqlJs, { type Database } from "sql.js";
 import * as UTIF from "utif2";
 import {
   computeAssayYamlHealth,
-  findMatchingTiffFilename,
+  TIFF_RE,
+  parsePosDirName,
   scanFolder,
   type FolderScan,
 } from "./lib/scan-utils.cjs";
@@ -76,6 +77,28 @@ interface ReadImageFailure {
 type ReadImageResponse = ReadImageSuccess | ReadImageFailure;
 
 let dbRef: Database | null = null;
+const TIFF_INDEX_CACHE_TTL_MS = 2500;
+
+interface ParsedTiffMeta {
+  strict: boolean;
+  channel: number | null;
+  position: number | null;
+  time: number | null;
+  z: number | null;
+}
+
+interface TiffCandidate {
+  filename: string;
+  filePath: string;
+  meta: ParsedTiffMeta;
+}
+
+interface TiffCacheEntry {
+  expiresAt: number;
+  candidates: TiffCandidate[];
+}
+
+const tiffCache = new Map<string, TiffCacheEntry>();
 
 function getDbPath(): string {
   return path.join(app.getPath("userData"), DB_FILENAME);
@@ -256,25 +279,161 @@ function normalizeRgbaInPlace(rgba: Uint8Array, width: number, height: number): 
   }
 }
 
-async function readPositionImage(request: ReadImageRequest): Promise<ReadImageResponse> {
-  try {
-    const posDir = path.join(request.folder, `Pos${request.pos}`);
-    const entries = await readdir(posDir, { withFileTypes: true });
-    const filename = findMatchingTiffFilename(
-      entries.filter((entry) => entry.isFile()).map((entry) => entry.name),
-      request,
-    );
+function padInt(value: number, width: number): string {
+  const safe = Math.max(0, Math.floor(value));
+  return String(safe).padStart(width, "0");
+}
 
-    if (!filename) {
-      return { ok: false, error: "Requested TIFF was not found in position folder." };
+function buildTiffCandidates(request: ReadImageRequest): string[] {
+  const c = request.channel;
+  const p = request.pos;
+  const t = request.time;
+  const z = request.z;
+  return [
+    `img_channel${c}_position${p}_time${t}_z${z}.tif`,
+    `img_channel${c}_position${p}_time${t}_z${z}.tiff`,
+    `img_channel${padInt(c, 3)}_position${padInt(p, 3)}_time${padInt(t, 9)}_z${padInt(
+      z,
+      3,
+    )}.tif`,
+    `img_channel${padInt(c, 3)}_position${padInt(p, 3)}_time${padInt(t, 9)}_z${padInt(
+      z,
+      3,
+    )}.tiff`,
+    `img_channel${padInt(c, 3)}_position${p}_time${t}_z${padInt(z, 3)}.tif`,
+    `img_channel${padInt(c, 3)}_position${p}_time${t}_z${padInt(z, 3)}.tiff`,
+    `img_channel${c}_position${padInt(p, 3)}_time${padInt(t, 9)}_z${z}.tif`,
+    `img_channel${c}_position${padInt(p, 3)}_time${padInt(t, 9)}_z${z}.tiff`,
+  ];
+}
+
+function parseTiffMeta(filename: string): ParsedTiffMeta {
+  const strict = filename.match(TIFF_RE);
+  if (strict) {
+    return {
+      strict: true,
+      channel: Number.parseInt(strict[1], 10),
+      position: Number.parseInt(strict[2], 10),
+      time: Number.parseInt(strict[3], 10),
+      z: Number.parseInt(strict[4], 10),
+    };
+  }
+
+  const lower = filename.toLowerCase();
+  const readAxis = (label: string): number | null => {
+    const match = lower.match(new RegExp(`${label}[\\s_-]?(\\d+)`, "i"));
+    return match ? Number.parseInt(match[1], 10) : null;
+  };
+
+  return {
+    strict: false,
+    channel: readAxis("channel") ?? readAxis("ch"),
+    position: readAxis("position") ?? readAxis("pos"),
+    time: readAxis("time"),
+    z: readAxis("z"),
+  };
+}
+
+async function collectTiffCandidates(
+  directory: string,
+  maxDepth = 8,
+  depth = 0,
+): Promise<TiffCandidate[]> {
+  const entries = await readdir(directory, { withFileTypes: true });
+  const out: TiffCandidate[] = [];
+
+  for (const entry of entries) {
+    const filePath = path.join(directory, entry.name);
+    if (entry.isFile() && /\.tiff?$/i.test(entry.name)) {
+      out.push({
+        filename: entry.name,
+        filePath,
+        meta: parseTiffMeta(entry.name),
+      });
+      continue;
+    }
+    if (entry.isDirectory() && depth < maxDepth) {
+      try {
+        const nested = await collectTiffCandidates(filePath, maxDepth, depth + 1);
+        out.push(...nested);
+      } catch {
+        // Ignore unreadable nested directories.
+      }
+    }
+  }
+
+  return out;
+}
+
+async function getCachedTiffCandidates(directory: string, maxDepth = 8): Promise<TiffCandidate[]> {
+  const cacheKey = `${directory}|${maxDepth}`;
+  const now = Date.now();
+  const existing = tiffCache.get(cacheKey);
+  if (existing && existing.expiresAt > now) {
+    return existing.candidates;
+  }
+  const candidates = await collectTiffCandidates(directory, maxDepth);
+  tiffCache.set(cacheKey, {
+    expiresAt: now + TIFF_INDEX_CACHE_TTL_MS,
+    candidates,
+  });
+  return candidates;
+}
+
+function rankTiffCandidates(
+  candidates: TiffCandidate[],
+  request: ReadImageRequest,
+  preferRequestedPosition: boolean,
+): TiffCandidate[] {
+  const strictExact: TiffCandidate[] = [];
+  const looseExact: TiffCandidate[] = [];
+  const scored: Array<{ score: number; candidate: TiffCandidate }> = [];
+
+  for (const candidate of candidates) {
+    const meta = candidate.meta;
+    const posExact = meta.position === request.pos;
+    const channelExact = meta.channel === request.channel;
+    const timeExact = meta.time === request.time;
+    const zExact = meta.z === request.z;
+
+    if (posExact && channelExact && timeExact && zExact && meta.strict) {
+      strictExact.push(candidate);
+      continue;
+    }
+    if (posExact && channelExact && timeExact && zExact) {
+      looseExact.push(candidate);
+      continue;
     }
 
-    const filePath = path.join(posDir, filename);
-    const fileBytes = await readFile(filePath);
+    let score = 0;
+    if (posExact) score += 1000;
+    else if (preferRequestedPosition && meta.position != null) score -= 1000;
+    if (channelExact) score += 100;
+    if (timeExact) score += 10;
+    if (zExact) score += 1;
+    if (meta.strict) score += 3;
+    if (meta.position == null) score -= 1;
+    if (meta.channel == null) score -= 1;
+    if (meta.time == null) score -= 1;
+    if (meta.z == null) score -= 1;
+
+    scored.push({ score, candidate });
+  }
+
+  scored.sort((a, b) => b.score - a.score);
+  return [...strictExact, ...looseExact, ...scored.map((entry) => entry.candidate)];
+}
+
+async function decodeTiffCandidate(candidate: {
+  filename: string;
+  filePath: string;
+}): Promise<ReadImageSuccess | null> {
+  try {
+    const fileBytes = await readFile(candidate.filePath);
     const buffer = toArrayBuffer(fileBytes);
     const ifds = UTIF.decode(buffer);
     if (ifds.length === 0) {
-      return { ok: false, error: "Could not decode TIFF file." };
+      return null;
     }
 
     UTIF.decodeImage(buffer, ifds[0]);
@@ -283,16 +442,81 @@ async function readPositionImage(request: ReadImageRequest): Promise<ReadImageRe
     const height = ifds[0].height;
     normalizeRgbaInPlace(rgba, width, height);
 
-    const copy = new Uint8Array(rgba.length);
-    copy.set(rgba);
+    const rgbaCopy = new Uint8Array(rgba.length);
+    rgbaCopy.set(rgba);
 
     return {
       ok: true,
-      baseName: path.parse(filename).name,
+      baseName: path.parse(candidate.filename).name,
       width,
       height,
-      rgba: toArrayBuffer(copy),
+      rgba: toArrayBuffer(rgbaCopy),
     };
+  } catch {
+    return null;
+  }
+}
+
+async function tryDecodeCandidates(candidates: Array<{ filename: string; filePath: string }>): Promise<{
+  decoded: ReadImageSuccess;
+  candidate: { filename: string; filePath: string };
+} | null> {
+  const attempted = new Set<string>();
+  for (const candidate of candidates) {
+    if (attempted.has(candidate.filePath)) continue;
+    attempted.add(candidate.filePath);
+    const decoded = await decodeTiffCandidate(candidate);
+    if (decoded) {
+      return { decoded, candidate };
+    }
+  }
+  return null;
+}
+
+async function readPositionImage(request: ReadImageRequest): Promise<ReadImageResponse> {
+  try {
+    const entries = await readdir(request.folder, { withFileTypes: true });
+    const positionDirName = entries
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .find((name) => parsePosDirName(name) === request.pos);
+    const positionDirectory = positionDirName ? path.join(request.folder, positionDirName) : null;
+
+    const directCandidates: Array<{ filename: string; filePath: string }> = [];
+    const directRoots = [...new Set([...(positionDirectory ? [positionDirectory] : []), request.folder])];
+    for (const root of directRoots) {
+      for (const filename of buildTiffCandidates(request)) {
+        directCandidates.push({ filename, filePath: path.join(root, filename) });
+      }
+    }
+
+    const directHit = await tryDecodeCandidates(directCandidates);
+    if (directHit) {
+      return directHit.decoded;
+    }
+
+    if (positionDirectory) {
+      const byPosition = await getCachedTiffCandidates(positionDirectory, 8);
+      const rankedByPosition = rankTiffCandidates(byPosition, request, true);
+      const positionHit = await tryDecodeCandidates(rankedByPosition);
+      if (positionHit) {
+        return positionHit.decoded;
+      }
+    }
+
+    const byRoot = await getCachedTiffCandidates(request.folder, 8);
+    if (byRoot.length > 0) {
+      const rankedByRoot = rankTiffCandidates(byRoot, request, false);
+      const rootHit = await tryDecodeCandidates(rankedByRoot);
+      if (rootHit) {
+        return rootHit.decoded;
+      }
+    }
+
+    if (positionDirectory) {
+      return { ok: false, error: "No readable TIFF found for requested position." };
+    }
+    return { ok: false, error: "No readable TIFF found in data folder." };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return { ok: false, error: message || "Failed to read image." };
@@ -328,6 +552,26 @@ function registerIpc(): void {
     if (result.canceled || result.filePaths.length === 0) return null;
     return { path: result.filePaths[0] };
   });
+
+  ipcMain.handle(
+    "assays:pick-assay-yaml",
+    async (): Promise<{ file: string; folder: string } | null> => {
+      const result = await dialog.showOpenDialog({
+        title: "Select assay.yaml",
+        properties: ["openFile"],
+        filters: [
+          { name: "Assay YAML", extensions: ["yaml", "yml"] },
+          { name: "All Files", extensions: ["*"] },
+        ],
+      });
+      if (result.canceled || result.filePaths.length === 0) return null;
+      const file = result.filePaths[0];
+      if (path.basename(file).toLowerCase() !== "assay.yaml") {
+        return null;
+      }
+      return { file, folder: path.dirname(file) };
+    },
+  );
 
   ipcMain.handle(
     "assays:read-yaml",

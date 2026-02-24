@@ -25,6 +25,7 @@ export interface FolderScan {
   channels: number[];
   times: number[];
   zSlices: number[];
+  registeredPositions: number[];
 }
 
 export interface ReadImageSuccess {

@@ -8,6 +8,10 @@ contextBridge.exposeInMainWorld("liscaDesktop", {
     upsert: (meta: unknown) => ipcRenderer.invoke("assays:upsert", meta) as Promise<{ id: string }>,
     pickDataFolder: () =>
       ipcRenderer.invoke("assays:pick-data-folder") as Promise<{ path: string } | null>,
+    pickAssayYaml: () =>
+      ipcRenderer.invoke("assays:pick-assay-yaml") as Promise<
+        { file: string; folder: string } | null
+      >,
     readYaml: (folder: string) =>
       ipcRenderer.invoke("assays:read-yaml", folder) as Promise<
         { ok: true; yaml: string } | { ok: false; error: string }

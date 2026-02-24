@@ -3,16 +3,14 @@ import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { ArrowLeft, FolderOpen } from "lucide-react";
 import { AppContainer } from "@/components/layout/AppContainer";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Separator } from "@/components/ui/separator";
 import { api } from "@/lib/api";
 import { DEFAULT_REGISTER, parseAssayYaml, stringifyAssayYaml } from "@/lib/assay-yaml";
 import type { AssaySample, AssayType } from "@/lib/types";
 
 const selectClassName =
-  "border-input bg-background focus-visible:border-ring focus-visible:ring-ring/40 h-9 w-full rounded-md border px-3 py-1 text-sm shadow-xs outline-none focus-visible:ring-[3px]";
+  "border-input bg-background focus-visible:border-ring focus-visible:ring-ring/50 h-9 w-full rounded-md border px-3 py-1 text-sm shadow-xs outline-none focus-visible:ring-[3px]";
 
 function todayIso(): string {
   return new Date().toISOString().slice(0, 10);
@@ -206,43 +204,40 @@ export default function InfoPage() {
 
   return (
     <AppContainer className="max-w-4xl">
-      <Card className="py-0">
-        <CardHeader className="py-5">
-          <div className="flex items-start justify-between gap-4">
-            <div>
-              <CardTitle className="text-2xl">Info</CardTitle>
-              <CardDescription className="mt-1">Configure assay metadata and sample mapping.</CardDescription>
-            </div>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => navigate(assayId ? `/assays/${assayId}/actions` : "/assays/new/actions")}
-            >
-              <ArrowLeft className="size-4" />
-              Back
-            </Button>
+      <div className="space-y-5 rounded-lg border bg-background/90 p-6 shadow-sm backdrop-blur-sm">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h1 className="text-4xl tracking-tight">Info</h1>
+            <p className="mt-1 text-sm text-muted-foreground">Configure assay metadata and sample mapping.</p>
           </div>
-        </CardHeader>
-        <Separator />
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            onClick={() => navigate(assayId ? `/assays/${assayId}/actions` : "/assays/new/actions")}
+            title="Back"
+          >
+            <ArrowLeft className="size-4" />
+          </Button>
+        </div>
 
-        <CardContent className="py-6">
+        <div className="border-t border-border/70 pt-5">
           {loading ? (
             <p className="text-sm text-muted-foreground">Loading info...</p>
           ) : (
-            <div className="grid gap-6">
+            <div className="grid gap-5">
               <div className="grid gap-4 md:grid-cols-2">
                 <div className="space-y-2">
-                  <Label>Name</Label>
+                  <Label className="text-xs uppercase tracking-wider text-muted-foreground">Name</Label>
                   <Input value={name} onChange={(event) => setName(event.target.value)} />
                 </div>
                 <div className="space-y-2">
-                  <Label>Date</Label>
+                  <Label className="text-xs uppercase tracking-wider text-muted-foreground">Date</Label>
                   <Input type="date" value={date} onChange={(event) => setDate(event.target.value)} />
                 </div>
               </div>
 
               <div className="space-y-2">
-                <Label>Data folder</Label>
+                <Label className="text-xs uppercase tracking-wider text-muted-foreground">Data folder</Label>
                 <div className="flex gap-2">
                   <Input value={folder} onChange={(event) => setFolder(event.target.value)} />
                   <Button variant="outline" onClick={() => void handleBrowseFolder()}>
@@ -254,7 +249,9 @@ export default function InfoPage() {
 
               <div className="grid gap-4 md:grid-cols-2">
                 <div className="space-y-2">
-                  <Label>Brightfield channel</Label>
+                  <Label className="text-xs uppercase tracking-wider text-muted-foreground">
+                    Brightfield channel
+                  </Label>
                   <Input
                     type="number"
                     min={0}
@@ -263,16 +260,20 @@ export default function InfoPage() {
                   />
                 </div>
                 <div className="space-y-2">
-                  <Label>Type</Label>
-                  <select className={selectClassName} value={type} onChange={(event) => setType(event.target.value as AssayType)}>
+                  <Label className="text-xs uppercase tracking-wider text-muted-foreground">Type</Label>
+                  <select
+                    className={selectClassName}
+                    value={type}
+                    onChange={(event) => setType(event.target.value as AssayType)}
+                  >
                     <option value="killing">killing</option>
                     <option value="expression">expression</option>
                   </select>
                 </div>
               </div>
 
-              <div className="rounded-lg border p-4">
-                <div className="mb-3 grid gap-3 md:grid-cols-[1fr_1fr_auto]">
+              <div className="rounded-md border bg-muted/25 p-3">
+                <div className="mb-3 grid gap-2 md:grid-cols-[1fr_1fr_auto]">
                   <Input
                     placeholder="Sample name"
                     value={sampleName}
@@ -288,20 +289,20 @@ export default function InfoPage() {
                   </Button>
                 </div>
 
-                <div className="flex flex-wrap gap-2">
+                <div className="flex min-h-8 flex-wrap gap-1.5">
                   {samples.map((sample, index) => (
-                    <Button
+                    <button
                       key={`${sample.name}-${sample.position_slice}-${index}`}
-                      variant="secondary"
-                      size="xs"
+                      type="button"
                       onClick={() => beginEditSample(index)}
-                      className="gap-2"
+                      className="inline-flex items-center gap-1 rounded-full border bg-background px-2 py-0.5 text-xs transition-colors hover:bg-accent/50"
                     >
-                      <span>{sample.name}</span>
+                      <span className="font-medium">{sample.name}</span>
+                      <span className="text-muted-foreground">{sample.position_slice}</span>
                       <span
                         role="button"
                         tabIndex={0}
-                        className="rounded border px-1 text-[11px]"
+                        className="rounded px-1 text-muted-foreground hover:text-foreground"
                         onClick={(event) => {
                           event.stopPropagation();
                           removeSample(index);
@@ -316,7 +317,7 @@ export default function InfoPage() {
                       >
                         x
                       </span>
-                    </Button>
+                    </button>
                   ))}
                 </div>
               </div>
@@ -328,9 +329,10 @@ export default function InfoPage() {
               </div>
             </div>
           )}
-        </CardContent>
-      </Card>
-      {error && <p className="mt-3 text-sm text-destructive">{error}</p>}
+        </div>
+
+        {error && <p className="text-sm text-destructive">{error}</p>}
+      </div>
     </AppContainer>
   );
 }

@@ -25,6 +25,7 @@ declare global {
           folder: string;
         }) => Promise<{ id: string }>;
         pickDataFolder: () => Promise<{ path: string } | null>;
+        pickAssayYaml: () => Promise<{ file: string; folder: string } | null>;
         readYaml: (folder: string) => Promise<{ ok: true; yaml: string } | { ok: false; error: string }>;
         writeYaml: (
           folder: string,
@@ -40,6 +41,7 @@ declare global {
           channels: number[];
           times: number[];
           zSlices: number[];
+          registeredPositions: number[];
         }>;
         readImage: (payload: {
           folder: string;

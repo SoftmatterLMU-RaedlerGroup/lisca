@@ -3,8 +3,6 @@ import { useNavigate, useParams } from "react-router-dom";
 import { ArrowLeft, FileUp, FlaskConical, Activity } from "lucide-react";
 import { AppContainer } from "@/components/layout/AppContainer";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Separator } from "@/components/ui/separator";
 import { api } from "@/lib/api";
 import { parseAssayYaml } from "@/lib/assay-yaml";
 import type { AssayListItem } from "@/lib/types";
@@ -15,6 +13,7 @@ export default function AssayActionsPage() {
   const assayId = params.id;
   const [assays, setAssays] = useState<AssayListItem[]>([]);
   const [loading, setLoading] = useState(!!assayId);
+  const [importing, setImporting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -50,83 +49,129 @@ export default function AssayActionsPage() {
   );
 
   const handleImportYaml = useCallback(async () => {
-    if (!assay) return;
-    const result = await api.assays.readYaml(assay.folder);
-    if (!result.ok) {
-      setError(result.error);
-      return;
-    }
+    setImporting(true);
+    setError(null);
     try {
-      parseAssayYaml(result.yaml);
+      if (assay) {
+        const result = await api.assays.readYaml(assay.folder);
+        if (!result.ok) {
+          setError(result.error);
+          return;
+        }
+        try {
+          parseAssayYaml(result.yaml);
+        } catch (err) {
+          setError(err instanceof Error ? err.message : String(err));
+          return;
+        }
+        navigate(`/register/${assay.id}`);
+        return;
+      }
+
+      const picked = await api.assays.pickAssayYaml();
+      if (!picked) {
+        setError("Please select an assay.yaml file.");
+        return;
+      }
+
+      const result = await api.assays.readYaml(picked.folder);
+      if (!result.ok) {
+        setError(result.error);
+        return;
+      }
+
+      const parsed = parseAssayYaml(result.yaml);
+      const saved = await api.assays.upsert({
+        name: parsed.name,
+        time: parsed.date,
+        type: parsed.type,
+        folder: picked.folder,
+      });
+      navigate(`/register/${saved.id}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
-      return;
+    } finally {
+      setImporting(false);
     }
-    navigate(`/register/${assay.id}`);
   }, [assay, navigate]);
 
-  const importDisabled = !assay || !assay.has_assay_yaml;
+  const importDisabled = assayId ? !assay || !assay.has_assay_yaml || importing : importing;
 
   return (
     <AppContainer className="max-w-3xl">
-      <Card className="py-0">
-        <CardHeader className="py-5">
-          <div className="flex items-start justify-between gap-4">
-            <div>
-              <CardTitle className="text-2xl">Assay</CardTitle>
-              <CardDescription className="mt-1">
-                Choose how to continue for {assay ? assay.name : "a new assay"}.
-              </CardDescription>
-            </div>
-            <Button variant="outline" size="sm" onClick={() => navigate("/assays")}>
-              <ArrowLeft className="size-4" />
-              Back
-            </Button>
+      <div className="space-y-5 rounded-lg border bg-background/90 p-6 shadow-sm backdrop-blur-sm">
+        <div className="relative flex items-center justify-center">
+          <div className="text-center">
+            <h1 className="text-4xl tracking-tight">Assay type</h1>
           </div>
-        </CardHeader>
-        <Separator />
-        <CardContent className="py-8">
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            className="absolute right-0 top-1/2 -translate-y-1/2"
+            onClick={() => navigate("/assays")}
+            title="Back"
+          >
+            <ArrowLeft className="size-4" />
+          </Button>
+        </div>
+
+        <div className="border-t border-border/70 pt-5">
           {loading ? (
             <p className="text-sm text-muted-foreground">Loading assay...</p>
           ) : (
             <div className="grid gap-4 sm:grid-cols-3">
-              <Button
-                variant="outline"
-                className="h-28 rounded-xl text-base"
-                onClick={() => void handleImportYaml()}
+              <button
+                type="button"
+                className="flex h-32 flex-col items-start justify-between rounded-lg border bg-background p-4 text-left text-sm transition-colors hover:bg-accent/40 disabled:cursor-not-allowed disabled:opacity-50"
+                onClick={() => {
+                  void handleImportYaml();
+                }}
                 disabled={importDisabled}
               >
-                <FileUp className="size-4" />
-                Import YAML
-              </Button>
-              <Button variant="outline" className="h-28 rounded-xl text-base" onClick={() => goInfo("killing")}>
-                <FlaskConical className="size-4" />
-                Killing
-              </Button>
-              <Button
-                variant="outline"
-                className="h-28 rounded-xl text-base"
+                <FileUp className="size-5 text-muted-foreground" />
+                <div>
+                  <p className="font-medium">Import assay</p>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {importing
+                      ? "Importing..."
+                      : "Load existing assay.yaml from a data folder."}
+                  </p>
+                </div>
+              </button>
+              <button
+                type="button"
+                className="flex h-32 flex-col items-start justify-between rounded-lg border bg-background p-4 text-left text-sm transition-colors hover:bg-accent/40"
+                onClick={() => goInfo("killing")}
+              >
+                <FlaskConical className="size-5 text-muted-foreground" />
+                <div>
+                  <p className="font-medium">Killing</p>
+                  <p className="mt-1 text-xs text-muted-foreground">Open info form with killing assay type.</p>
+                </div>
+              </button>
+              <button
+                type="button"
+                className="flex h-32 flex-col items-start justify-between rounded-lg border bg-background p-4 text-left text-sm transition-colors hover:bg-accent/40"
                 onClick={() => goInfo("expression")}
               >
-                <Activity className="size-4" />
-                Expression
-              </Button>
+                <Activity className="size-5 text-muted-foreground" />
+                <div>
+                  <p className="font-medium">Expression</p>
+                  <p className="mt-1 text-xs text-muted-foreground">Open info form with expression assay type.</p>
+                </div>
+              </button>
             </div>
           )}
 
-          {!loading && !assayId && (
-            <p className="mt-4 text-sm text-muted-foreground">
-              New assay: choose Killing or Expression to configure assay info.
-            </p>
-          )}
           {!loading && assay && importDisabled && (
             <p className="mt-4 text-sm text-muted-foreground">
               Import YAML is disabled because assay.yaml is missing in this data folder.
             </p>
           )}
-        </CardContent>
-      </Card>
-      {error && <p className="mt-3 text-sm text-destructive">{error}</p>}
+        </div>
+
+        {error && <p className="text-sm text-destructive">{error}</p>}
+      </div>
     </AppContainer>
   );
 }

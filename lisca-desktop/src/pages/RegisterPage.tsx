@@ -1,17 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { Home, PanelsTopLeft, ListTodo, ChevronLeft, ChevronRight } from "lucide-react";
-import { AppContainer } from "@/components/layout/AppContainer";
+import { Home, ListTodo, ChevronLeft, ChevronRight, Check, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { Slider } from "@/components/ui/slider";
@@ -30,14 +20,15 @@ interface ImageFrame {
   rgba: Uint8ClampedArray;
 }
 
-const selectClassName =
-  "border-input bg-background focus-visible:border-ring focus-visible:ring-ring/40 h-9 w-full rounded-md border px-3 py-1 text-sm shadow-xs outline-none focus-visible:ring-[3px]";
+type RegisterMainTab = "dashboard" | "register" | "view" | "analyze";
+type DragMode = "none" | "pan" | "rotate" | "resize";
 
 function drawPatternGrid(
   ctx: CanvasRenderingContext2D,
   width: number,
   height: number,
   params: RegisterShape,
+  overlayOpacity: number,
 ): void {
   const alpha = (params.alpha * Math.PI) / 180;
   const beta = (params.beta * Math.PI) / 180;
@@ -50,8 +41,10 @@ function drawPatternGrid(
   const minLen = Math.max(1, Math.min(Math.hypot(v1.x, v1.y), Math.hypot(v2.x, v2.y)));
   const maxRange = Math.ceil((Math.max(width, height) * 2) / minLen) + 2;
 
-  ctx.lineWidth = 1.1;
-  ctx.strokeStyle = "rgba(10, 10, 10, 0.9)";
+  const safeOpacity = Math.max(0, Math.min(1, overlayOpacity));
+  ctx.lineWidth = 0.9;
+  ctx.fillStyle = `rgba(59, 130, 246, ${safeOpacity})`;
+  ctx.strokeStyle = `rgba(37, 99, 235, ${Math.min(1, safeOpacity + 0.2)})`;
 
   for (let i = -maxRange; i <= maxRange; i += 1) {
     for (let j = -maxRange; j <= maxRange; j += 1) {
@@ -60,24 +53,85 @@ function drawPatternGrid(
       const x = cx - params.w / 2;
       const y = cy - params.h / 2;
       if (x < 0 || y < 0 || x + params.w > width || y + params.h > height) continue;
-
-      if (params.shape === "hex") {
-        const hw = params.w / 2;
-        const hh = params.h / 2;
-        ctx.beginPath();
-        ctx.moveTo(cx - hw * 0.5, cy - hh);
-        ctx.lineTo(cx + hw * 0.5, cy - hh);
-        ctx.lineTo(cx + hw, cy);
-        ctx.lineTo(cx + hw * 0.5, cy + hh);
-        ctx.lineTo(cx - hw * 0.5, cy + hh);
-        ctx.lineTo(cx - hw, cy);
-        ctx.closePath();
-        ctx.stroke();
-      } else {
-        ctx.strokeRect(x, y, params.w, params.h);
-      }
+      ctx.fillRect(x, y, params.w, params.h);
+      ctx.strokeRect(x, y, params.w, params.h);
     }
   }
+
+  // Match mupattern register affordance: origin + vector 1 (red) + vector 2 (green).
+  const drawArrow = (toX: number, toY: number, color: string): void => {
+    const angle = Math.atan2(toY - center.y, toX - center.x);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 8;
+    ctx.beginPath();
+    ctx.moveTo(center.x, center.y);
+    ctx.lineTo(toX, toY);
+    ctx.stroke();
+
+    const head = 60;
+    ctx.beginPath();
+    ctx.moveTo(toX, toY);
+    ctx.lineTo(toX - head * Math.cos(angle - 0.3), toY - head * Math.sin(angle - 0.3));
+    ctx.moveTo(toX, toY);
+    ctx.lineTo(toX - head * Math.cos(angle + 0.3), toY - head * Math.sin(angle + 0.3));
+    ctx.stroke();
+  };
+
+  ctx.fillStyle = "rgba(255, 255, 255, 0.85)";
+  ctx.beginPath();
+  ctx.arc(center.x, center.y, 12, 0, Math.PI * 2);
+  ctx.fill();
+
+  drawArrow(center.x + v1.x, center.y + v1.y, "rgba(255, 100, 100, 0.9)");
+  drawArrow(center.x + v2.x, center.y + v2.y, "rgba(100, 255, 100, 0.9)");
+}
+
+function normalizeAngleDeg(value: number): number {
+  const normalized = ((value + 180) % 360 + 360) % 360 - 180;
+  return Number.isFinite(normalized) ? normalized : 0;
+}
+
+function scaleRegisterShapeToImageSpace(
+  params: RegisterShape,
+  fromSize: { width: number; height: number },
+  toSize: { width: number; height: number },
+): RegisterShape {
+  if (
+    fromSize.width <= 0 ||
+    fromSize.height <= 0 ||
+    toSize.width <= 0 ||
+    toSize.height <= 0
+  ) {
+    return params;
+  }
+
+  const sx = toSize.width / fromSize.width;
+  const sy = toSize.height / fromSize.height;
+
+  const scaleVector = (length: number, angleDeg: number): { length: number; angleDeg: number } => {
+    const angleRad = (angleDeg * Math.PI) / 180;
+    const x = length * Math.cos(angleRad) * sx;
+    const y = length * Math.sin(angleRad) * sy;
+    return {
+      length: Math.hypot(x, y),
+      angleDeg: normalizeAngleDeg((Math.atan2(y, x) * 180) / Math.PI),
+    };
+  };
+
+  const v1 = scaleVector(params.a, params.alpha);
+  const v2 = scaleVector(params.b, params.beta);
+
+  return {
+    ...params,
+    a: v1.length,
+    alpha: v1.angleDeg,
+    b: v2.length,
+    beta: v2.angleDeg,
+    w: params.w * sx,
+    h: params.h * sy,
+    dx: params.dx * sx,
+    dy: params.dy * sy,
+  };
 }
 
 function RangeRow({
@@ -99,9 +153,11 @@ function RangeRow({
 }) {
   return (
     <div className="space-y-1.5">
-      <div className="flex items-center justify-between text-xs">
-        <Label className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{label}</Label>
-        <span className="text-muted-foreground">{Math.round(value * 100) / 100} {unit}</span>
+      <div className="flex items-center justify-between">
+        <Label className="text-sm">{label}</Label>
+        <span className="text-sm text-muted-foreground">
+          {Math.round(value * 100) / 100} {unit}
+        </span>
       </div>
       <Slider
         min={min}
@@ -119,12 +175,67 @@ function RangeRow({
   );
 }
 
+function DiscreteSliderRow({
+  label,
+  options,
+  value,
+  onChange,
+}: {
+  label: string;
+  options: number[];
+  value: number;
+  onChange: (value: number) => void;
+}) {
+  const values = options.length > 0 ? options : [0];
+  const valueIndex = Math.max(0, values.indexOf(value));
+  const sliderMax = Math.max(values.length - 1, 1);
+  const [draftIndex, setDraftIndex] = useState(valueIndex);
+
+  useEffect(() => {
+    setDraftIndex(valueIndex);
+  }, [valueIndex, values.length]);
+
+  const clampToIndex = (raw: number) => Math.max(0, Math.min(values.length - 1, Math.round(raw)));
+
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center justify-between">
+        <Label className="text-sm">{label}</Label>
+        <span className="text-sm text-muted-foreground">{values[draftIndex] ?? values[0]}</span>
+      </div>
+      <Slider
+        min={0}
+        max={sliderMax}
+        step={1}
+        value={[draftIndex]}
+        disabled={options.length <= 1}
+        onValueChange={(next) => {
+          const raw = next[0];
+          if (typeof raw === "number" && Number.isFinite(raw)) {
+            setDraftIndex(clampToIndex(raw));
+          }
+        }}
+        onValueCommit={(next) => {
+          if (options.length === 0) return;
+          const raw = next[0];
+          if (typeof raw !== "number" || !Number.isFinite(raw)) return;
+          const index = clampToIndex(raw);
+          onChange(values[index] ?? values[0]);
+        }}
+      />
+    </div>
+  );
+}
+
 export default function RegisterPage() {
   const navigate = useNavigate();
   const params = useParams<{ id: string }>();
   const assayId = params.id ?? "";
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const dragModeRef = useRef<DragMode>("none");
+  const activePointerIdRef = useRef<number | null>(null);
+  const lastPointerRef = useRef({ x: 0, y: 0 });
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -132,9 +243,13 @@ export default function RegisterPage() {
   const [assayYaml, setAssayYaml] = useState<AssayYaml | null>(null);
   const [scan, setScan] = useState<FolderScan | null>(null);
   const [image, setImage] = useState<ImageFrame | null>(null);
+  const [modelImageSize, setModelImageSize] = useState<{ width: number; height: number } | null>(null);
   const [showSidebars, setShowSidebars] = useState(true);
   const [showTaskModal, setShowTaskModal] = useState(false);
+  const taskMenuRef = useRef<HTMLDivElement>(null);
   const [hydratedPersist, setHydratedPersist] = useState(false);
+  const [activeTab, setActiveTab] = useState<RegisterMainTab>("register");
+  const [selectedSampleFilters, setSelectedSampleFilters] = useState<string[]>([]);
 
   const [registerParams, setRegisterParams] = useState<RegisterShape>({
     shape: "square",
@@ -154,6 +269,7 @@ export default function RegisterPage() {
   const [selectedTime, setSelectedTime] = useState(0);
   const [selectedZ, setSelectedZ] = useState(0);
   const [selectedSampleIndex, setSelectedSampleIndex] = useState(0);
+  const [overlayOpacity, setOverlayOpacity] = useState(0.35);
 
   useEffect(() => {
     let cancelled = false;
@@ -220,6 +336,7 @@ export default function RegisterPage() {
         setAssay(row);
         setAssayYaml(parsed);
         setScan(folderScan);
+        setModelImageSize(null);
         setRegisterParams(resolvedParams);
         initialRegisterParamsRef.current = resolvedParams;
         setSelectedPos(resolvedPos);
@@ -228,6 +345,7 @@ export default function RegisterPage() {
         setSelectedZ(resolvedZ);
         setSelectedSampleIndex(resolvedSampleIndex);
         setShowSidebars(persisted?.showSidebars ?? true);
+        setOverlayOpacity(persisted?.overlayOpacity ?? 0.35);
         setHydratedPersist(true);
       } catch (err) {
         if (!cancelled) {
@@ -246,60 +364,123 @@ export default function RegisterPage() {
     };
   }, [assayId]);
 
-  const samplePositions = useMemo(() => {
-    if (!scan || !assayYaml || assayYaml.samples.length === 0) return scan?.positions ?? [];
-    const sample = assayYaml.samples[selectedSampleIndex] ?? assayYaml.samples[0];
-    if (!sample) return scan.positions;
-    try {
-      const indices = parseSliceStringOverValues(sample.position_slice, scan.positions);
-      return indices
-        .map((index) => scan.positions[index])
-        .filter((value): value is number => typeof value === "number");
-    } catch {
-      return scan.positions;
+  const allPositions = useMemo(() => scan?.positions ?? [], [scan]);
+
+  const positionSampleMap = useMemo(() => {
+    const mapping = new Map<number, string[]>();
+    const positions = scan?.positions ?? [];
+    if (!assayYaml || positions.length === 0) return mapping;
+
+    for (const sample of assayYaml.samples) {
+      try {
+        const indices = parseSliceStringOverValues(sample.position_slice, positions);
+        for (const index of indices) {
+          const pos = positions[index];
+          if (typeof pos !== "number") continue;
+          const labels = mapping.get(pos) ?? [];
+          if (!labels.includes(sample.name)) labels.push(sample.name);
+          mapping.set(pos, labels);
+        }
+      } catch {
+        // Skip invalid sample slice in dashboard mapping view.
+      }
     }
-  }, [assayYaml, scan, selectedSampleIndex]);
+    return mapping;
+  }, [assayYaml, scan]);
+
+  const dashboardSampleOptions = useMemo(() => {
+    const names = assayYaml?.samples.map((sample) => sample.name).filter((name) => name.trim().length > 0) ?? [];
+    return [...new Set(names)];
+  }, [assayYaml]);
 
   useEffect(() => {
-    if (samplePositions.length === 0) return;
-    if (!samplePositions.includes(selectedPos)) {
-      setSelectedPos(samplePositions[0]);
+    if (dashboardSampleOptions.length === 0) {
+      setSelectedSampleFilters([]);
+      return;
     }
-  }, [samplePositions, selectedPos]);
+    setSelectedSampleFilters((prev) => prev.filter((name) => dashboardSampleOptions.includes(name)));
+  }, [dashboardSampleOptions]);
+
+  const dashboardPositions = useMemo(() => {
+    if (!scan) return [];
+    if (selectedSampleFilters.length === 0) return scan.positions;
+    return scan.positions.filter((pos) => {
+      const labels = positionSampleMap.get(pos) ?? [];
+      return selectedSampleFilters.every((sampleName) => labels.includes(sampleName));
+    });
+  }, [scan, selectedSampleFilters, positionSampleMap]);
+
+  const filterButtonIsActive = useCallback(
+    (sampleName: string) => selectedSampleFilters.includes(sampleName),
+    [selectedSampleFilters],
+  );
+
+  const toggleSampleFilter = useCallback((sampleName: string) => {
+    setSelectedSampleFilters((prev) =>
+      prev.includes(sampleName) ? prev.filter((value) => value !== sampleName) : [...prev, sampleName],
+    );
+  }, []);
+
+  useEffect(() => {
+    if (allPositions.length === 0) return;
+    if (!allPositions.includes(selectedPos)) {
+      setSelectedPos(allPositions[0]);
+    }
+  }, [allPositions, selectedPos]);
+
+  useEffect(() => {
+    if (activeTab !== "dashboard") return;
+    if (dashboardPositions.length === 0) return;
+    if (!dashboardPositions.includes(selectedPos)) {
+      setSelectedPos(dashboardPositions[0]);
+    }
+  }, [activeTab, dashboardPositions, selectedPos]);
 
   useEffect(() => {
     let cancelled = false;
+
     const run = async () => {
-      if (!assay || !scan || scan.positions.length === 0) return;
-      const response = await api.register.readImage({
+      if (!assay) return;
+      const request = {
         folder: assay.folder,
         pos: selectedPos,
         channel: selectedChannel,
         time: selectedTime,
         z: selectedZ,
+      };
+      const response = await api.register.readImage({
+        folder: request.folder,
+        pos: request.pos,
+        channel: request.channel,
+        time: request.time,
+        z: request.z,
       });
-
       if (cancelled) return;
-      if (!response.ok) {
-        setImage(null);
-        setError(response.error);
+      if (response.ok) {
+        setModelImageSize((prev) => {
+          if (!prev) return { width: response.width, height: response.height };
+          return {
+            width: Math.max(prev.width, response.width),
+            height: Math.max(prev.height, response.height),
+          };
+        });
+        setError(null);
+        setImage({
+          width: response.width,
+          height: response.height,
+          rgba: new Uint8ClampedArray(response.rgba.slice(0)),
+        });
         return;
       }
-
-      const rgbaBuffer = response.rgba.slice(0);
-      setError(null);
-      setImage({
-        width: response.width,
-        height: response.height,
-        rgba: new Uint8ClampedArray(rgbaBuffer),
-      });
+      setImage(null);
+      setError(response.error || "Failed to load image.");
     };
 
     void run();
     return () => {
       cancelled = true;
     };
-  }, [assay, scan, selectedPos, selectedChannel, selectedTime, selectedZ]);
+  }, [assay, selectedPos, selectedChannel, selectedTime, selectedZ]);
 
   useEffect(() => {
     if (!assay || !hydratedPersist) return;
@@ -312,6 +493,7 @@ export default function RegisterPage() {
         selectedZ,
         selectedSampleIndex,
         showSidebars,
+        overlayOpacity,
       });
     }, 300);
     return () => window.clearTimeout(timer);
@@ -325,6 +507,7 @@ export default function RegisterPage() {
     selectedZ,
     selectedSampleIndex,
     showSidebars,
+    overlayOpacity,
   ]);
 
   useEffect(() => {
@@ -333,6 +516,9 @@ export default function RegisterPage() {
 
     const width = image?.width ?? 2048;
     const height = image?.height ?? 2048;
+    const drawSize = { width, height };
+    const modelSize = modelImageSize ?? drawSize;
+    const drawParams = scaleRegisterShapeToImageSpace(registerParams, modelSize, drawSize);
 
     canvas.width = width;
     canvas.height = height;
@@ -349,32 +535,126 @@ export default function RegisterPage() {
       ctx.fillRect(0, 0, width, height);
     }
 
-    drawPatternGrid(ctx, width, height, registerParams);
-  }, [image, registerParams]);
+    drawPatternGrid(ctx, width, height, drawParams, overlayOpacity);
+  }, [activeTab, image, modelImageSize, overlayOpacity, registerParams]);
 
-  const currentSample = assayYaml?.samples[selectedSampleIndex] ?? null;
+  const currentPosIndex = allPositions.indexOf(selectedPos);
+  const canMovePrev = currentPosIndex > 0;
+  const canMoveNext = currentPosIndex >= 0 && currentPosIndex < allPositions.length - 1;
+  const registeredPosSet = useMemo(
+    () => new Set((scan?.registeredPositions ?? []).filter((value) => Number.isFinite(value))),
+    [scan],
+  );
 
   const movePosition = useCallback(
     (direction: -1 | 1) => {
-      const idx = samplePositions.indexOf(selectedPos);
+      const idx = allPositions.indexOf(selectedPos);
       if (idx < 0) {
-        if (samplePositions[0] != null) setSelectedPos(samplePositions[0]);
+        if (allPositions[0] != null) setSelectedPos(allPositions[0]);
         return;
       }
       const next = idx + direction;
-      if (next < 0 || next >= samplePositions.length) return;
-      setSelectedPos(samplePositions[next]);
+      if (next < 0 || next >= allPositions.length) return;
+      setSelectedPos(allPositions[next]);
     },
-    [samplePositions, selectedPos],
+    [allPositions, selectedPos],
   );
 
-  const handleSave = useCallback(async () => {
-    if (!assay) return;
-    const size = {
+  const handleCanvasPointerDown = useCallback((event: React.PointerEvent<HTMLCanvasElement>) => {
+    if (activePointerIdRef.current !== null) return;
+    if (event.button === 2) {
+      dragModeRef.current = "rotate";
+    } else if (event.button === 1) {
+      dragModeRef.current = "resize";
+    } else if (event.button === 0) {
+      dragModeRef.current = "pan";
+    } else {
+      return;
+    }
+    activePointerIdRef.current = event.pointerId;
+    lastPointerRef.current = { x: event.clientX, y: event.clientY };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    event.preventDefault();
+  }, []);
+
+  const handleCanvasPointerMove = useCallback((event: React.PointerEvent<HTMLCanvasElement>) => {
+    if (activePointerIdRef.current !== event.pointerId) return;
+    if (dragModeRef.current === "none") return;
+
+    const dx = event.clientX - lastPointerRef.current.x;
+    const dy = event.clientY - lastPointerRef.current.y;
+    lastPointerRef.current = { x: event.clientX, y: event.clientY };
+    const displaySize = {
       width: image?.width ?? 2048,
       height: image?.height ?? 2048,
     };
-    const csv = buildBboxCsv(size, registerParams);
+    const modelSize = modelImageSize ?? displaySize;
+    const sx = displaySize.width > 0 ? displaySize.width / modelSize.width : 1;
+    const sy = displaySize.height > 0 ? displaySize.height / modelSize.height : 1;
+    const invSx = sx > 0 ? 1 / sx : 1;
+    const invSy = sy > 0 ? 1 / sy : 1;
+
+    if (dragModeRef.current === "pan") {
+      setRegisterParams((prev) => ({
+        ...prev,
+        dx: prev.dx + dx * invSx,
+        dy: prev.dy + dy * invSy,
+      }));
+      return;
+    }
+
+    if (dragModeRef.current === "rotate") {
+      const deltaDeg = (dx / Math.max(1, displaySize.width)) * 220;
+      setRegisterParams((prev) => ({
+        ...prev,
+        alpha: normalizeAngleDeg(prev.alpha + deltaDeg),
+        beta: normalizeAngleDeg(prev.beta + deltaDeg),
+      }));
+      return;
+    }
+
+    const factor = Math.max(0.01, 1 + (dx / Math.max(1, displaySize.width)) * 2.5);
+    setRegisterParams((prev) => ({
+      ...prev,
+      a: Math.max(5, prev.a * factor),
+      b: Math.max(5, prev.b * factor),
+    }));
+  }, [image, modelImageSize]);
+
+  const handleCanvasPointerUp = useCallback((event: React.PointerEvent<HTMLCanvasElement>) => {
+    if (activePointerIdRef.current !== event.pointerId) return;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    activePointerIdRef.current = null;
+    dragModeRef.current = "none";
+  }, []);
+
+  const handleCanvasPointerCancel = useCallback((event: React.PointerEvent<HTMLCanvasElement>) => {
+    if (activePointerIdRef.current !== event.pointerId) return;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    activePointerIdRef.current = null;
+    dragModeRef.current = "none";
+  }, []);
+
+  const handleSave = useCallback(async () => {
+    if (!assay) return;
+    if (!image) {
+      setError("No image loaded for current selection.");
+      return;
+    }
+    const modelSize = modelImageSize ?? {
+      width: image.width,
+      height: image.height,
+    };
+    const imageSize = {
+      width: image.width,
+      height: image.height,
+    };
+    const imageSpaceParams = scaleRegisterShapeToImageSpace(registerParams, modelSize, imageSize);
+    const csv = buildBboxCsv(imageSize, imageSpaceParams);
     const result = await api.register.saveBbox({
       folder: assay.folder,
       pos: selectedPos,
@@ -383,270 +663,443 @@ export default function RegisterPage() {
     if (!result.ok) {
       setError(result.error);
     }
-  }, [assay, image, registerParams, selectedPos]);
+  }, [assay, image, modelImageSize, registerParams, selectedPos]);
+
+  useEffect(() => {
+    if (!showTaskModal) return;
+
+    const handleDocumentClick = (event: MouseEvent) => {
+      const target = event.target as Node | null;
+      if (!target) return;
+      if (taskMenuRef.current && taskMenuRef.current.contains(target)) {
+        return;
+      }
+      setShowTaskModal(false);
+    };
+
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setShowTaskModal(false);
+      }
+    };
+
+    document.addEventListener("mousedown", handleDocumentClick);
+    document.addEventListener("keydown", handleEscape);
+    return () => {
+      document.removeEventListener("mousedown", handleDocumentClick);
+      document.removeEventListener("keydown", handleEscape);
+    };
+  }, [showTaskModal]);
 
   if (loading) {
     return (
-      <AppContainer className="max-w-[1240px]">
-        <Card className="items-center py-16">
-          <p className="text-sm text-muted-foreground">Loading register...</p>
-        </Card>
-      </AppContainer>
+      <div className="flex h-screen items-center justify-center bg-background">
+        <p className="text-sm text-muted-foreground">Loading register...</p>
+      </div>
     );
   }
 
   return (
-    <AppContainer className="max-w-[1240px]">
-      <Card className="gap-0 overflow-hidden py-0">
-        <div className="flex items-center justify-between gap-4 px-5 py-4">
-          <Tabs value="register" className="w-auto">
-            <TabsList className="h-10 rounded-md">
-              <TabsTrigger value="register" className="capitalize">register</TabsTrigger>
-              <TabsTrigger value="view" disabled className="capitalize">view</TabsTrigger>
-              <TabsTrigger value="analyze" disabled className="capitalize">analyze</TabsTrigger>
+    <div className="flex h-screen flex-col bg-background">
+      <header className="border-b border-border bg-background">
+        <div className="flex items-center justify-between gap-4 px-4 py-3">
+          <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as RegisterMainTab)} className="w-auto">
+            <TabsList>
+              <TabsTrigger value="dashboard">
+                dashboard
+              </TabsTrigger>
+              <TabsTrigger value="register">
+                register
+              </TabsTrigger>
+              <TabsTrigger value="view" disabled>
+                view
+              </TabsTrigger>
+            <TabsTrigger value="analyze" disabled>
+                analyze
+              </TabsTrigger>
             </TabsList>
           </Tabs>
 
           <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" onClick={() => setShowSidebars((prev) => !prev)}>
-              <PanelsTopLeft className="size-4" />
+            <Button
+              variant={showSidebars ? "destructive" : "outline"}
+              size="sm"
+              onClick={() => setShowSidebars((prev) => !prev)}
+              aria-label="Toggle expert mode"
+            >
               expert
             </Button>
-            <Button variant="outline" size="sm" onClick={() => setShowTaskModal(true)}>
-              <ListTodo className="size-4" />
-              task
-            </Button>
-            <Button variant="outline" size="sm" onClick={() => navigate("/assays")}>
+              <div className="relative" ref={taskMenuRef}>
+                <Button
+                  variant="outline"
+                  size="icon-sm"
+                  onClick={() => setShowTaskModal((prev) => !prev)}
+                  aria-label="Open task"
+                >
+                  <ListTodo className="size-4" />
+                </Button>
+                {showTaskModal && (
+                  <div
+                    className="absolute right-0 top-full z-50 mt-2 w-64 rounded-md border border-border bg-background p-3 shadow-lg"
+                  >
+                    <div className="h-24" />
+                  </div>
+                )}
+            </div>
+            <Button variant="outline" size="icon-sm" onClick={() => navigate("/assays")} aria-label="Go to assays">
               <Home className="size-4" />
-              home
             </Button>
           </div>
         </div>
+      </header>
 
-        <Separator />
+      {error && <div className="border-b border-border bg-destructive/5 px-4 py-2 text-sm text-destructive">{error}</div>}
 
-        <div
+      <div className="flex min-h-0 flex-1">
+        {showSidebars && (
+          <aside className="w-72 flex-shrink-0 overflow-y-auto border-r border-border bg-background/80 p-4 backdrop-blur-sm">
+            {activeTab !== "dashboard" && (
+              <div className="space-y-4">
+                <div>
+                  <h2 className="text-sm font-medium uppercase tracking-wider text-muted-foreground">image</h2>
+                  <Separator className="mt-2" />
+                </div>
+
+                <div className="space-y-4">
+                  <DiscreteSliderRow
+                    label="channel"
+                    options={scan?.channels ?? []}
+                    value={selectedChannel}
+                    onChange={setSelectedChannel}
+                  />
+
+                  <DiscreteSliderRow
+                    label="time"
+                    options={scan?.times ?? []}
+                    value={selectedTime}
+                    onChange={setSelectedTime}
+                  />
+
+                  <DiscreteSliderRow
+                    label="z"
+                    options={scan?.zSlices ?? []}
+                    value={selectedZ}
+                    onChange={setSelectedZ}
+                  />
+                </div>
+              </div>
+            )}
+          </aside>
+        )}
+
+        <section
           className={cn(
-            "min-h-[620px]",
-            showSidebars ? "grid grid-cols-[220px_minmax(0,1fr)_300px]" : "grid grid-cols-[minmax(0,1fr)]",
+            "flex min-w-0 flex-1 flex-col gap-3 p-4",
+            !showSidebars && "mx-auto w-full max-w-[1100px]",
           )}
         >
-          {showSidebars && (
-            <aside className="space-y-4 border-r p-4">
-              <div className="space-y-2">
-                <Label>Channel</Label>
-                <select
-                  className={selectClassName}
-                  value={selectedChannel}
-                  onChange={(event) => setSelectedChannel(Number(event.target.value))}
-                >
-                  {(scan?.channels ?? []).map((value) => (
-                    <option key={value} value={value}>{value}</option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="space-y-2">
-                <Label>Time</Label>
-                <select
-                  className={selectClassName}
-                  value={selectedTime}
-                  onChange={(event) => setSelectedTime(Number(event.target.value))}
-                >
-                  {(scan?.times ?? []).map((value) => (
-                    <option key={value} value={value}>{value}</option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="space-y-2">
-                <Label>Z</Label>
-                <select
-                  className={selectClassName}
-                  value={selectedZ}
-                  onChange={(event) => setSelectedZ(Number(event.target.value))}
-                >
-                  {(scan?.zSlices ?? []).map((value) => (
-                    <option key={value} value={value}>{value}</option>
-                  ))}
-                </select>
-              </div>
-            </aside>
-          )}
-
-          <section className="flex min-w-0 flex-col gap-3 p-4">
-            <div className="flex items-center justify-center gap-3 rounded-md border px-3 py-2 text-sm">
-              <span className="font-medium">position {selectedPos}</span>
-              <span className="text-muted-foreground">|</span>
-              <select
-                className="h-8 rounded-md border bg-background px-2 text-sm"
-                value={selectedSampleIndex}
-                onChange={(event) => setSelectedSampleIndex(Number(event.target.value))}
-                disabled={!assayYaml || assayYaml.samples.length === 0}
-              >
-                {!assayYaml || assayYaml.samples.length === 0 ? (
-                  <option value={0}>sample</option>
+          {activeTab === "dashboard" ? (
+            <>
+              <div className="flex flex-wrap items-center gap-2 border border-border bg-background px-4 py-2">
+                {dashboardSampleOptions.length === 0 ? (
+                  <span className="text-xs text-muted-foreground">No samples loaded</span>
                 ) : (
-                  assayYaml.samples.map((sample, index) => (
-                    <option key={`${sample.name}-${index}`} value={index}>
-                      {sample.name}
-                    </option>
+                  dashboardSampleOptions.map((sampleName) => (
+                    <Button
+                      key={sampleName}
+                      size="sm"
+                      variant={filterButtonIsActive(sampleName) ? "secondary" : "outline"}
+                      onClick={() => toggleSampleFilter(sampleName)}
+                      className="h-7"
+                    >
+                      {sampleName}
+                    </Button>
                   ))
                 )}
-              </select>
-            </div>
-
-            <div className="flex-1 overflow-auto rounded-lg border bg-muted/20 p-2">
-              <canvas ref={canvasRef} className="mx-auto block max-h-full max-w-full" />
-            </div>
-
-            <div className="flex flex-wrap items-center gap-2 border-t pt-3">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() =>
-                  setRegisterParams((prev) => ({ ...prev, shape: "square", b: prev.a, alpha: 0, beta: 90 }))
-                }
-              >
-                Auto square
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() =>
-                  setRegisterParams((prev) => ({ ...prev, shape: "hex", b: prev.a, alpha: 0, beta: 60 }))
-                }
-              >
-                Auto hex
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setRegisterParams(initialRegisterParamsRef.current)}
-              >
-                reset
-              </Button>
-              <Button size="sm" onClick={() => void handleSave()}>
-                save
-              </Button>
-              <Button variant="outline" size="icon-sm" onClick={() => movePosition(-1)}>
-                <ChevronLeft className="size-4" />
-              </Button>
-              <Button variant="outline" size="icon-sm" onClick={() => movePosition(1)}>
-                <ChevronRight className="size-4" />
-              </Button>
-            </div>
-
-            {currentSample && (
-              <p className="text-xs text-muted-foreground">sample slice: {currentSample.position_slice}</p>
-            )}
-          </section>
-
-          {showSidebars && (
-            <aside className="space-y-4 border-l p-4">
-              <div className="grid grid-cols-2 gap-2">
-                <Button
-                  size="sm"
-                  variant={registerParams.shape === "square" ? "default" : "outline"}
-                  onClick={() => setRegisterParams((prev) => ({ ...prev, shape: "square" }))}
-                >
-                  square
-                </Button>
-                <Button
-                  size="sm"
-                  variant={registerParams.shape === "hex" ? "default" : "outline"}
-                  onClick={() => setRegisterParams((prev) => ({ ...prev, shape: "hex" }))}
-                >
-                  hex
-                </Button>
+              </div>
+              <div className="flex flex-1 overflow-auto rounded-md border border-border bg-background">
+                <div className="w-full">
+                  <div className="grid h-10 grid-cols-3 items-center border-b bg-muted/40 px-4 text-sm font-medium">
+                    <span>Position</span>
+                    <span>Sample</span>
+                    <span>Registered</span>
+                  </div>
+                  {(dashboardPositions ?? []).length === 0 ? (
+                    <div className="px-4 py-6 text-sm text-muted-foreground">No positions found.</div>
+                  ) : (
+                    (dashboardPositions ?? []).map((pos) => {
+                      if (!Number.isFinite(pos)) return null;
+                      const selected = pos === selectedPos;
+                      const labels = positionSampleMap.get(pos) ?? [];
+                      return (
+                        <button
+                          key={pos}
+                          type="button"
+                          className={cn(
+                            "grid w-full grid-cols-3 items-center border-b px-4 py-2.5 text-left text-sm transition-colors last:border-b-0 hover:bg-muted/70",
+                            selected &&
+                              "bg-muted/70",
+                          )}
+                          onClick={() => {
+                            setSelectedPos(pos);
+                            if (assayYaml?.samples?.length) {
+                              const firstMatch = assayYaml.samples.findIndex((sample) =>
+                                labels.includes(sample.name),
+                              );
+                              if (firstMatch >= 0) setSelectedSampleIndex(firstMatch);
+                            }
+                          }}
+                        >
+                          <span className="font-medium">{pos}</span>
+                          <span className="flex flex-wrap gap-1">
+                            {labels.length === 0 ? (
+                              <span className="h-4" />
+                            ) : (
+                              labels.map((label) => (
+                                <span
+                                  key={`${pos}-${label}`}
+                                  className="inline-flex items-center rounded-full border bg-background px-2 py-0.5 text-xs"
+                                >
+                                  {label}
+                                </span>
+                              ))
+                            )}
+                          </span>
+                          <span className="text-xs">
+                            {registeredPosSet.has(pos) ? (
+                              <Check className="size-4 text-foreground" />
+                            ) : (
+                              <X className="size-4 text-muted-foreground" />
+                            )}
+                          </span>
+                        </button>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="flex justify-center">
+                <div className="inline-flex w-fit items-center gap-2 rounded-xl border border-border bg-background/80 px-2 py-2 text-sm">
+                  <Button
+                    variant="outline"
+                    size="icon-sm"
+                    onClick={() => movePosition(-1)}
+                    disabled={!canMovePrev}
+                    aria-label="Previous position"
+                  >
+                    <ChevronLeft className="size-4" />
+                  </Button>
+                  <span className="min-w-24 px-2 text-center font-medium tabular-nums">
+                    position {selectedPos}
+                  </span>
+                  <Button
+                    variant="outline"
+                    size="icon-sm"
+                    onClick={() => movePosition(1)}
+                    disabled={!canMoveNext}
+                    aria-label="Next position"
+                  >
+                    <ChevronRight className="size-4" />
+                  </Button>
+                </div>
               </div>
 
-              <RangeRow
-                label="a"
-                value={registerParams.a}
-                min={5}
-                max={300}
-                step={1}
-                onChange={(value) => setRegisterParams((prev) => ({ ...prev, a: value }))}
-              />
-              <RangeRow
-                label="alpha"
-                value={registerParams.alpha}
-                min={-180}
-                max={180}
-                step={1}
-                unit="deg"
-                onChange={(value) => setRegisterParams((prev) => ({ ...prev, alpha: value }))}
-              />
-              <RangeRow
-                label="b"
-                value={registerParams.b}
-                min={5}
-                max={300}
-                step={1}
-                onChange={(value) => setRegisterParams((prev) => ({ ...prev, b: value }))}
-              />
-              <RangeRow
-                label="beta"
-                value={registerParams.beta}
-                min={-180}
-                max={180}
-                step={1}
-                unit="deg"
-                onChange={(value) => setRegisterParams((prev) => ({ ...prev, beta: value }))}
-              />
-              <RangeRow
-                label="w"
-                value={registerParams.w}
-                min={5}
-                max={200}
-                step={1}
-                onChange={(value) => setRegisterParams((prev) => ({ ...prev, w: value }))}
-              />
-              <RangeRow
-                label="h"
-                value={registerParams.h}
-                min={5}
-                max={200}
-                step={1}
-                onChange={(value) => setRegisterParams((prev) => ({ ...prev, h: value }))}
-              />
-              <RangeRow
-                label="dx"
-                value={registerParams.dx}
-                min={-500}
-                max={500}
-                step={1}
-                onChange={(value) => setRegisterParams((prev) => ({ ...prev, dx: value }))}
-              />
-              <RangeRow
-                label="dy"
-                value={registerParams.dy}
-                min={-500}
-                max={500}
-                step={1}
-                onChange={(value) => setRegisterParams((prev) => ({ ...prev, dy: value }))}
-              />
-            </aside>
+              <div className="flex flex-1 items-center justify-center overflow-auto rounded-lg border border-border bg-muted/30 p-1">
+                <canvas
+                  ref={canvasRef}
+                  className="max-h-full max-w-full cursor-move object-contain"
+                  onPointerDown={handleCanvasPointerDown}
+                  onPointerMove={handleCanvasPointerMove}
+                  onPointerUp={handleCanvasPointerUp}
+                  onPointerCancel={handleCanvasPointerCancel}
+                  onContextMenu={(event) => event.preventDefault()}
+                />
+              </div>
+
+              <div className="flex justify-center pt-3">
+                <div className="flex flex-wrap items-center justify-center gap-1.5 rounded-xl border border-border bg-background/80 px-2 py-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-7 text-sm"
+                    onClick={() =>
+                      setRegisterParams((prev) => ({ ...prev, shape: "square", b: prev.a, alpha: 0, beta: 90 }))
+                    }
+                  >
+                    auto square
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-7 text-sm"
+                    onClick={() =>
+                      setRegisterParams((prev) => ({ ...prev, shape: "hex", b: prev.a, alpha: 0, beta: 60 }))
+                    }
+                  >
+                    auto hex
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-7 text-sm"
+                    onClick={() => {
+                      setRegisterParams((prev) => ({
+                        ...prev,
+                        a: 75,
+                        alpha: 0,
+                        b: 75,
+                        beta: 90,
+                        w: 50,
+                        h: 50,
+                        dx: 0,
+                        dy: 0,
+                      }));
+                      setOverlayOpacity(0.35);
+                    }}
+                  >
+                    reset
+                  </Button>
+                  <Button variant="outline" size="sm" className="h-7 text-sm" onClick={() => void handleSave()}>
+                    save
+                  </Button>
+                </div>
+              </div>
+            </>
           )}
-        </div>
-      </Card>
+        </section>
 
-      {error && <p className="mt-3 text-sm text-destructive">{error}</p>}
+        {showSidebars && (
+          <aside className="w-72 flex-shrink-0 overflow-y-auto border-l border-border bg-background/80 p-4 backdrop-blur-sm">
+            {activeTab !== "dashboard" && (
+              <div className="space-y-4">
+                <div className="space-y-2">
+                  <h2 className="text-sm font-medium uppercase tracking-wider text-muted-foreground">Pattern</h2>
+                  <Separator />
+                  <div className="grid grid-cols-2 gap-2">
+                    <Button
+                      size="sm"
+                      className="h-7 text-sm"
+                      variant="outline"
+                      onClick={() =>
+                        setRegisterParams((prev) => ({
+                          ...prev,
+                          shape: "square",
+                          beta: normalizeAngleDeg(prev.alpha + 90),
+                        }))
+                      }
+                    >
+                      square
+                    </Button>
+                    <Button
+                      size="sm"
+                      className="h-7 text-sm"
+                      variant="outline"
+                      onClick={() =>
+                        setRegisterParams((prev) => ({
+                          ...prev,
+                          shape: "hex",
+                          beta: normalizeAngleDeg(prev.alpha + 60),
+                        }))
+                      }
+                    >
+                      hex
+                    </Button>
+                  </div>
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <Label className="text-sm">opacity</Label>
+                      <span className="text-sm text-muted-foreground">{Math.round(overlayOpacity * 100)}%</span>
+                    </div>
+                    <Slider
+                      min={0}
+                      max={1}
+                      step={0.01}
+                      value={[overlayOpacity]}
+                      onValueChange={(next) => {
+                        const value = next[0];
+                        if (typeof value === "number" && Number.isFinite(value)) {
+                          setOverlayOpacity(Math.max(0, Math.min(1, value)));
+                        }
+                      }}
+                    />
+                  </div>
+                </div>
 
-      <Dialog open={showTaskModal} onOpenChange={setShowTaskModal}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Task</DialogTitle>
-            <DialogDescription>Placeholder modal.</DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setShowTaskModal(false)}>
-              close
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </AppContainer>
+                <RangeRow
+                  label="a"
+                  value={registerParams.a}
+                  min={5}
+                  max={300}
+                  step={1}
+                  onChange={(value) => setRegisterParams((prev) => ({ ...prev, a: value }))}
+                />
+                <RangeRow
+                  label="alpha"
+                  value={registerParams.alpha}
+                  min={-180}
+                  max={180}
+                  step={1}
+                  unit="deg"
+                  onChange={(value) => setRegisterParams((prev) => ({ ...prev, alpha: value }))}
+                />
+                <RangeRow
+                  label="b"
+                  value={registerParams.b}
+                  min={5}
+                  max={300}
+                  step={1}
+                  onChange={(value) => setRegisterParams((prev) => ({ ...prev, b: value }))}
+                />
+                <RangeRow
+                  label="beta"
+                  value={registerParams.beta}
+                  min={-180}
+                  max={180}
+                  step={1}
+                  unit="deg"
+                  onChange={(value) => setRegisterParams((prev) => ({ ...prev, beta: value }))}
+                />
+                <RangeRow
+                  label="w"
+                  value={registerParams.w}
+                  min={5}
+                  max={200}
+                  step={1}
+                  onChange={(value) => setRegisterParams((prev) => ({ ...prev, w: value }))}
+                />
+                <RangeRow
+                  label="h"
+                  value={registerParams.h}
+                  min={5}
+                  max={200}
+                  step={1}
+                  onChange={(value) => setRegisterParams((prev) => ({ ...prev, h: value }))}
+                />
+                <RangeRow
+                  label="dx"
+                  value={registerParams.dx}
+                  min={-500}
+                  max={500}
+                  step={1}
+                  onChange={(value) => setRegisterParams((prev) => ({ ...prev, dx: value }))}
+                />
+                <RangeRow
+                  label="dy"
+                  value={registerParams.dy}
+                  min={-500}
+                  max={500}
+                  step={1}
+                  onChange={(value) => setRegisterParams((prev) => ({ ...prev, dy: value }))}
+                />
+              </div>
+            )}
+          </aside>
+        )}
+      </div>
+
+    </div>
   );
 }

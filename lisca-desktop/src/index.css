@@ -56,11 +56,12 @@
   html,
   body,
   #root {
+    height: 100%;
     min-height: 100%;
   }
 
   body {
-    @apply bg-background text-foreground text-sm;
+    @apply bg-background text-foreground text-base;
     font-family: "Google Sans", "Google Sans Text", "Noto Sans", "Segoe UI", Arial, sans-serif;
   }
 }

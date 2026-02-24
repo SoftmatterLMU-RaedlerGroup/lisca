@@ -7,7 +7,12 @@ import { collectAxesFromFilenames, parsePosDirName, scanFolder } from "../electr
 describe("scan parser", () => {
   test("parses position directory names", () => {
     expect(parsePosDirName("Pos0")).toBe(0);
+    expect(parsePosDirName("Pos001")).toBe(1);
+    expect(parsePosDirName("Position001")).toBe(1);
+    expect(parsePosDirName("position 058")).toBe(58);
+    expect(parsePosDirName("Pos-058")).toBe(58);
     expect(parsePosDirName("Pos058")).toBe(58);
+    expect(parsePosDirName("  123  ")).toBe(123);
     expect(parsePosDirName("foo")).toBeNull();
   });
 
@@ -29,14 +34,55 @@ describe("scan parser", () => {
     try {
       await mkdir(path.join(dir, "Pos9"));
       await mkdir(path.join(dir, "Pos2"));
+      await mkdir(path.join(dir, "Pos001"));
       await writeFile(path.join(dir, "Pos2", "img_channel002_position002_time000000003_z005.tif"), "");
       await writeFile(path.join(dir, "Pos2", "img_channel001_position002_time000000000_z000.tif"), "");
+      await writeFile(path.join(dir, "Pos001", "img_channel001_position001_time000000000_z000.tiff"), "");
 
       const scan = await scanFolder(dir);
-      expect(scan.positions).toEqual([2, 9]);
+      expect(scan.positions).toEqual([1, 2, 9]);
       expect(scan.channels).toEqual([1, 2]);
       expect(scan.times).toEqual([0, 3]);
       expect(scan.zSlices).toEqual([0, 5]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("scans nested TIFF files inside position folders", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "lisca-desktop-scan-nested-"));
+    try {
+      await mkdir(path.join(dir, "Pos156"));
+      await mkdir(path.join(dir, "Pos156", "images"));
+      await writeFile(
+        path.join(dir, "Pos156", "images", "img_channel001_position156_time000000001_z000.tif"),
+        "",
+      );
+
+      const scan = await scanFolder(dir);
+      expect(scan.positions).toEqual([156]);
+      expect(scan.channels).toEqual([1]);
+      expect(scan.times).toEqual([1]);
+      expect(scan.zSlices).toEqual([0]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("falls back to top-level TIFFs when no position directories exist", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "lisca-desktop-scan-fallback-"));
+    try {
+      await writeFile(
+        path.join(dir, "img_channel000_position156_time000000000_z000.tif"),
+        "",
+      );
+      await writeFile(path.join(dir, "img_channel001_position200_time000000002_z003.tif"), "");
+
+      const scan = await scanFolder(dir);
+      expect(scan.positions).toEqual([156, 200]);
+      expect(scan.channels).toEqual([0, 1]);
+      expect(scan.times).toEqual([0, 2]);
+      expect(scan.zSlices).toEqual([0, 3]);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

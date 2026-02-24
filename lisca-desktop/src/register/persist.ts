@@ -10,6 +10,7 @@ export interface RegisterPersistEntry {
   selectedZ: number;
   selectedSampleIndex: number;
   showSidebars: boolean;
+  overlayOpacity: number;
 }
 
 interface RegisterPersistStore {
@@ -58,6 +59,10 @@ function normalizeEntry(value: unknown): RegisterPersistEntry | null {
     selectedZ: Math.floor(candidate.selectedZ),
     selectedSampleIndex: Math.floor(candidate.selectedSampleIndex),
     showSidebars: candidate.showSidebars,
+    overlayOpacity:
+      typeof candidate.overlayOpacity === "number" && Number.isFinite(candidate.overlayOpacity)
+        ? Math.max(0, Math.min(1, candidate.overlayOpacity))
+        : 0.35,
   };
 }
 
@@ -97,4 +102,3 @@ export function saveRegisterPersistEntry(assayId: string, entry: RegisterPersist
   store.assays[assayId] = entry;
   saveStore(store);
 }
-

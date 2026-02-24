@@ -11,6 +11,7 @@ export const api = {
     remove: (id: string) => window.liscaDesktop.assays.remove(id),
     upsert: (meta: AssayMeta) => window.liscaDesktop.assays.upsert(meta),
     pickDataFolder: () => window.liscaDesktop.assays.pickDataFolder(),
+    pickAssayYaml: () => window.liscaDesktop.assays.pickAssayYaml(),
     readYaml: (folder: string) => window.liscaDesktop.assays.readYaml(folder),
     writeYaml: (folder: string, yaml: string) => window.liscaDesktop.assays.writeYaml(folder, yaml),
   },
