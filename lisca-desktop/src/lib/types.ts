@@ -43,6 +43,19 @@ export interface ReadImageFailure {
 
 export type ReadImageResponse = ReadImageSuccess | ReadImageFailure;
 
+export interface ReadRegistrationSuccess {
+  ok: true;
+  yaml: string;
+}
+
+export interface ReadRegistrationFailure {
+  ok: false;
+  error: string;
+  code: "not_found" | "read_error";
+}
+
+export type ReadRegistrationResponse = ReadRegistrationSuccess | ReadRegistrationFailure;
+
 export interface AssaySample {
   name: string;
   position_slice: string;

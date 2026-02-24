@@ -76,6 +76,24 @@ interface ReadImageFailure {
 
 type ReadImageResponse = ReadImageSuccess | ReadImageFailure;
 
+interface ReadRegistrationRequest {
+  folder: string;
+  pos: number;
+}
+
+interface ReadRegistrationSuccess {
+  ok: true;
+  yaml: string;
+}
+
+interface ReadRegistrationFailure {
+  ok: false;
+  error: string;
+  code: "not_found" | "read_error";
+}
+
+type ReadRegistrationResponse = ReadRegistrationSuccess | ReadRegistrationFailure;
+
 let dbRef: Database | null = null;
 const TIFF_INDEX_CACHE_TTL_MS = 2500;
 
@@ -523,19 +541,50 @@ async function readPositionImage(request: ReadImageRequest): Promise<ReadImageRe
   }
 }
 
-async function saveBbox(payload: { folder: string; pos: number; csv: string }): Promise<{
+async function saveBbox(payload: {
+  folder: string;
+  pos: number;
+  csv: string;
+  registrationYaml?: string;
+}): Promise<{
   ok: true;
 } | {
   ok: false;
   error: string;
 }> {
   try {
-    const filePath = path.join(payload.folder, `Pos${payload.pos}_bbox.csv`);
-    await writeFile(filePath, payload.csv.endsWith("\n") ? payload.csv : `${payload.csv}\n`, "utf8");
+    const bboxPath = path.join(payload.folder, `Pos${payload.pos}_bbox.csv`);
+    await writeFile(bboxPath, payload.csv.endsWith("\n") ? payload.csv : `${payload.csv}\n`, "utf8");
+
+    if (typeof payload.registrationYaml === "string") {
+      const registrationPath = path.join(payload.folder, `Pos${payload.pos}_registration.yaml`);
+      const yaml = payload.registrationYaml;
+      await writeFile(registrationPath, yaml.endsWith("\n") ? yaml : `${yaml}\n`, "utf8");
+    }
+
     return { ok: true };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return { ok: false, error: message || "Failed to save bbox." };
+  }
+}
+
+async function readRegistration(payload: ReadRegistrationRequest): Promise<ReadRegistrationResponse> {
+  try {
+    const registrationPath = path.join(payload.folder, `Pos${payload.pos}_registration.yaml`);
+    const yaml = await readFile(registrationPath, "utf8");
+    return { ok: true, yaml };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (
+      error &&
+      typeof error === "object" &&
+      "code" in error &&
+      (error as { code?: unknown }).code === "ENOENT"
+    ) {
+      return { ok: false, code: "not_found", error: "registration yaml not found" };
+    }
+    return { ok: false, code: "read_error", error: message || "Failed to read registration yaml." };
   }
 }
 
@@ -611,7 +660,16 @@ function registerIpc(): void {
     readPositionImage(payload),
   );
 
-  ipcMain.handle("register:save-bbox", async (_event, payload: { folder: string; pos: number; csv: string }) =>
+  ipcMain.handle("register:read-registration", async (_event, payload: ReadRegistrationRequest) =>
+    readRegistration(payload),
+  );
+
+  ipcMain.handle(
+    "register:save-bbox",
+    async (
+      _event,
+      payload: { folder: string; pos: number; csv: string; registrationYaml?: string },
+    ) =>
     saveBbox(payload),
   );
 

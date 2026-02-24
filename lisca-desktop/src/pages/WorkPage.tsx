@@ -9,6 +9,11 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api } from "@/lib/api";
 import { parseAssayYaml } from "@/lib/assay-yaml";
 import { buildBboxCsv, type RegisterShape } from "@/lib/bbox";
+import {
+  parsePositionRegistrationYaml,
+  stringifyPositionRegistrationYaml,
+  type GridShape,
+} from "@/lib/registration-yaml";
 import { parseSliceStringOverValues } from "@/lib/slices";
 import { cn } from "@/lib/utils";
 import { loadRegisterPersistEntry, saveRegisterPersistEntry } from "@/register/persist";
@@ -253,6 +258,7 @@ export default function WorkPage() {
     searchParams.get("tab") === "register" ? "register" : "dashboard",
   );
   const [selectedSampleFilters, setSelectedSampleFilters] = useState<string[]>([]);
+  const [gridShape, setGridShape] = useState<GridShape>("square");
 
   const [registerParams, setRegisterParams] = useState<RegisterShape>({
     shape: "square",
@@ -336,6 +342,11 @@ export default function WorkPage() {
           persisted.selectedSampleIndex < parsed.samples.length;
 
         const resolvedParams = persisted?.registerParams ?? nextParams;
+        const resolvedGridShape: GridShape = resolvedParams.shape === "hex" ? "hex" : "square";
+        const resolvedParamsWithShape: RegisterShape = {
+          ...resolvedParams,
+          shape: resolvedGridShape,
+        };
         const resolvedPos = validPos && persisted ? persisted.selectedPos : (folderScan.positions[0] ?? 0);
         const resolvedChannel = validChannel && persisted
           ? persisted.selectedChannel
@@ -350,8 +361,9 @@ export default function WorkPage() {
         setAssayYaml(parsed);
         setScan(folderScan);
         setModelImageSize(null);
-        setRegisterParams(resolvedParams);
-        initialRegisterParamsRef.current = resolvedParams;
+        setGridShape(resolvedGridShape);
+        setRegisterParams(resolvedParamsWithShape);
+        initialRegisterParamsRef.current = resolvedParamsWithShape;
         setSelectedPos(resolvedPos);
         setSelectedChannel(resolvedChannel);
         setSelectedTime(resolvedTime);
@@ -460,6 +472,42 @@ export default function WorkPage() {
       setSelectedPos(dashboardPositions[0]);
     }
   }, [activeTab, dashboardPositions, selectedPos]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const run = async () => {
+      if (!assay) return;
+      const response = await api.register.readRegistration({
+        folder: assay.folder,
+        pos: selectedPos,
+      });
+      if (cancelled) return;
+      if (!response.ok) {
+        // Requested behavior: if registration yaml is missing, keep current params unchanged.
+        if (response.code === "not_found") return;
+        return;
+      }
+      try {
+        const parsed = parsePositionRegistrationYaml(response.yaml);
+        if (cancelled) return;
+        const loadedGridShape: GridShape = parsed.grid_shape === "hex" ? "hex" : "square";
+        setGridShape(loadedGridShape);
+        setRegisterParams({
+          ...parsed.register,
+          shape: loadedGridShape,
+        });
+        setOverlayOpacity(parsed.overlay_opacity);
+      } catch {
+        // Ignore invalid registration yaml and keep current params.
+      }
+    };
+
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [assay, selectedPos]);
 
   useEffect(() => {
     let cancelled = false;
@@ -683,6 +731,10 @@ export default function WorkPage() {
       setError("No image loaded for current selection.");
       return;
     }
+    const paramsForGrid = {
+      ...registerParams,
+      shape: gridShape,
+    } satisfies RegisterShape;
     const modelSize = modelImageSize ?? {
       width: image.width,
       height: image.height,
@@ -691,12 +743,20 @@ export default function WorkPage() {
       width: image.width,
       height: image.height,
     };
-    const imageSpaceParams = scaleRegisterShapeToImageSpace(registerParams, modelSize, imageSize);
+    const imageSpaceParams = scaleRegisterShapeToImageSpace(paramsForGrid, modelSize, imageSize);
     const csv = buildBboxCsv(imageSize, imageSpaceParams);
+    const registrationYaml = stringifyPositionRegistrationYaml({
+      version: 1,
+      position: selectedPos,
+      grid_shape: gridShape,
+      register: paramsForGrid,
+      overlay_opacity: overlayOpacity,
+    });
     const result = await api.register.saveBbox({
       folder: assay.folder,
       pos: selectedPos,
       csv,
+      registrationYaml,
     });
     if (!result.ok) {
       setError(result.error);
@@ -704,7 +764,7 @@ export default function WorkPage() {
     }
     setError(null);
     await refreshScan();
-  }, [assay, image, modelImageSize, refreshScan, registerParams, selectedPos]);
+  }, [assay, gridShape, image, modelImageSize, overlayOpacity, refreshScan, registerParams, selectedPos]);
 
   useEffect(() => {
     if (!showTaskModal) return;
@@ -865,9 +925,9 @@ export default function WorkPage() {
               <div className="flex flex-1 overflow-auto rounded-md border border-border bg-background">
                 <div className="w-full">
                   <div className="grid h-10 grid-cols-3 items-center border-b bg-muted/40 px-4 text-sm font-medium">
-                    <span>Position</span>
-                    <span>Sample</span>
-                    <span>Registered</span>
+                    <span>position</span>
+                    <span>sample</span>
+                    <span>registered</span>
                   </div>
                   {(dashboardPositions ?? []).length === 0 ? (
                     <div className="px-4 py-6 text-sm text-muted-foreground">No positions found.</div>
@@ -973,9 +1033,16 @@ export default function WorkPage() {
                     variant="outline"
                     size="sm"
                     className="h-7 text-sm"
-                    onClick={() =>
-                      setRegisterParams((prev) => ({ ...prev, shape: "square", b: prev.a, alpha: 0, beta: 90 }))
-                    }
+                    onClick={() => {
+                      setGridShape("square");
+                      setRegisterParams((prev) => ({
+                        ...prev,
+                        shape: "square",
+                        b: prev.a,
+                        alpha: 0,
+                        beta: 90,
+                      }));
+                    }}
                   >
                     auto square
                   </Button>
@@ -983,9 +1050,16 @@ export default function WorkPage() {
                     variant="outline"
                     size="sm"
                     className="h-7 text-sm"
-                    onClick={() =>
-                      setRegisterParams((prev) => ({ ...prev, shape: "hex", b: prev.a, alpha: 0, beta: 60 }))
-                    }
+                    onClick={() => {
+                      setGridShape("hex");
+                      setRegisterParams((prev) => ({
+                        ...prev,
+                        shape: "hex",
+                        b: prev.a,
+                        alpha: 0,
+                        beta: 60,
+                      }));
+                    }}
                   >
                     auto hex
                   </Button>
@@ -996,10 +1070,11 @@ export default function WorkPage() {
                     onClick={() => {
                       setRegisterParams((prev) => ({
                         ...prev,
+                        shape: gridShape,
                         a: 75,
                         alpha: 0,
                         b: 75,
-                        beta: 90,
+                        beta: gridShape === "hex" ? 60 : 90,
                         w: 50,
                         h: 50,
                         dx: 0,
@@ -1024,20 +1099,21 @@ export default function WorkPage() {
             {activeTab !== "dashboard" && (
               <div className="space-y-4">
                 <div className="space-y-2">
-                  <h2 className="text-sm font-medium uppercase tracking-wider text-muted-foreground">Pattern</h2>
+                  <h2 className="text-sm font-medium uppercase tracking-wider text-muted-foreground">grid</h2>
                   <Separator />
                   <div className="grid grid-cols-2 gap-2">
                     <Button
                       size="sm"
                       className="h-7 text-sm"
                       variant="outline"
-                      onClick={() =>
+                      onClick={() => {
+                        setGridShape("square");
                         setRegisterParams((prev) => ({
                           ...prev,
                           shape: "square",
                           beta: normalizeAngleDeg(prev.alpha + 90),
-                        }))
-                      }
+                        }));
+                      }}
                     >
                       square
                     </Button>
@@ -1045,13 +1121,14 @@ export default function WorkPage() {
                       size="sm"
                       className="h-7 text-sm"
                       variant="outline"
-                      onClick={() =>
+                      onClick={() => {
+                        setGridShape("hex");
                         setRegisterParams((prev) => ({
                           ...prev,
                           shape: "hex",
                           beta: normalizeAngleDeg(prev.alpha + 60),
-                        }))
-                      }
+                        }));
+                      }}
                     >
                       hex
                     </Button>

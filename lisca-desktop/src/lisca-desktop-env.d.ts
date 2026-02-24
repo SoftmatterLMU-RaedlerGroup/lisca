@@ -62,10 +62,25 @@ declare global {
               error: string;
             }
         >;
+        readRegistration: (payload: {
+          folder: string;
+          pos: number;
+        }) => Promise<
+          | {
+              ok: true;
+              yaml: string;
+            }
+          | {
+              ok: false;
+              error: string;
+              code: "not_found" | "read_error";
+            }
+        >;
         saveBbox: (payload: {
           folder: string;
           pos: number;
           csv: string;
+          registrationYaml?: string;
         }) => Promise<{ ok: true } | { ok: false; error: string }>;
       };
     };

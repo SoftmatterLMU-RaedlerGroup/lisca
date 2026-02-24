@@ -25,6 +25,7 @@ contextBridge.exposeInMainWorld("liscaDesktop", {
   register: {
     scan: (folder: string) => ipcRenderer.invoke("register:scan", folder),
     readImage: (payload: unknown) => ipcRenderer.invoke("register:read-image", payload),
+    readRegistration: (payload: unknown) => ipcRenderer.invoke("register:read-registration", payload),
     saveBbox: (payload: unknown) => ipcRenderer.invoke("register:save-bbox", payload),
   },
 });
