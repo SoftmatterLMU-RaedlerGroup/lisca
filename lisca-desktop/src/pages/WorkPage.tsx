@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
-import { Home, ListTodo, ChevronLeft, ChevronRight, Check, X } from "lucide-react";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { ChevronLeft, ChevronRight, Check, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
@@ -227,9 +227,10 @@ function DiscreteSliderRow({
   );
 }
 
-export default function RegisterPage() {
+export default function WorkPage() {
   const navigate = useNavigate();
   const params = useParams<{ id: string }>();
+  const [searchParams] = useSearchParams();
   const assayId = params.id ?? "";
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -244,11 +245,13 @@ export default function RegisterPage() {
   const [scan, setScan] = useState<FolderScan | null>(null);
   const [image, setImage] = useState<ImageFrame | null>(null);
   const [modelImageSize, setModelImageSize] = useState<{ width: number; height: number } | null>(null);
-  const [showSidebars, setShowSidebars] = useState(true);
+  const [showSidebars, setShowSidebars] = useState(false);
   const [showTaskModal, setShowTaskModal] = useState(false);
   const taskMenuRef = useRef<HTMLDivElement>(null);
   const [hydratedPersist, setHydratedPersist] = useState(false);
-  const [activeTab, setActiveTab] = useState<RegisterMainTab>("register");
+  const [activeTab, setActiveTab] = useState<RegisterMainTab>(
+    searchParams.get("tab") === "register" ? "register" : "dashboard",
+  );
   const [selectedSampleFilters, setSelectedSampleFilters] = useState<string[]>([]);
 
   const [registerParams, setRegisterParams] = useState<RegisterShape>({
@@ -270,6 +273,16 @@ export default function RegisterPage() {
   const [selectedZ, setSelectedZ] = useState(0);
   const [selectedSampleIndex, setSelectedSampleIndex] = useState(0);
   const [overlayOpacity, setOverlayOpacity] = useState(0.35);
+
+  const refreshScan = useCallback(async () => {
+    if (!assay) return;
+    try {
+      const nextScan = await api.register.scan(assay.folder);
+      setScan(nextScan);
+    } catch {
+      // Keep current scan state if background refresh fails.
+    }
+  }, [assay]);
 
   useEffect(() => {
     let cancelled = false;
@@ -344,7 +357,7 @@ export default function RegisterPage() {
         setSelectedTime(resolvedTime);
         setSelectedZ(resolvedZ);
         setSelectedSampleIndex(resolvedSampleIndex);
-        setShowSidebars(persisted?.showSidebars ?? true);
+        setShowSidebars(false);
         setOverlayOpacity(persisted?.overlayOpacity ?? 0.35);
         setHydratedPersist(true);
       } catch (err) {
@@ -394,6 +407,13 @@ export default function RegisterPage() {
   }, [assayYaml]);
 
   useEffect(() => {
+    const tab = searchParams.get("tab");
+    if (tab === "dashboard" || tab === "register") {
+      setActiveTab(tab);
+    }
+  }, [searchParams]);
+
+  useEffect(() => {
     if (dashboardSampleOptions.length === 0) {
       setSelectedSampleFilters([]);
       return;
@@ -427,6 +447,11 @@ export default function RegisterPage() {
       setSelectedPos(allPositions[0]);
     }
   }, [allPositions, selectedPos]);
+
+  useEffect(() => {
+    if (activeTab !== "dashboard") return;
+    void refreshScan();
+  }, [activeTab, refreshScan]);
 
   useEffect(() => {
     if (activeTab !== "dashboard") return;
@@ -492,7 +517,6 @@ export default function RegisterPage() {
         selectedTime,
         selectedZ,
         selectedSampleIndex,
-        showSidebars,
         overlayOpacity,
       });
     }, 300);
@@ -506,7 +530,6 @@ export default function RegisterPage() {
     selectedTime,
     selectedZ,
     selectedSampleIndex,
-    showSidebars,
     overlayOpacity,
   ]);
 
@@ -639,6 +662,21 @@ export default function RegisterPage() {
     dragModeRef.current = "none";
   }, []);
 
+  const handleCanvasWheel = useCallback((event: React.WheelEvent<HTMLCanvasElement>) => {
+    event.preventDefault();
+
+    let deltaY = event.deltaY;
+    if (event.deltaMode === 1) deltaY *= 16;
+    if (event.deltaMode === 2) deltaY *= 320;
+
+    const factor = Math.exp(-deltaY * 0.0015);
+    setRegisterParams((prev) => ({
+      ...prev,
+      w: Math.max(5, Math.min(200, prev.w * factor)),
+      h: Math.max(5, Math.min(200, prev.h * factor)),
+    }));
+  }, []);
+
   const handleSave = useCallback(async () => {
     if (!assay) return;
     if (!image) {
@@ -662,8 +700,11 @@ export default function RegisterPage() {
     });
     if (!result.ok) {
       setError(result.error);
+      return;
     }
-  }, [assay, image, modelImageSize, registerParams, selectedPos]);
+    setError(null);
+    await refreshScan();
+  }, [assay, image, modelImageSize, refreshScan, registerParams, selectedPos]);
 
   useEffect(() => {
     if (!showTaskModal) return;
@@ -694,7 +735,7 @@ export default function RegisterPage() {
   if (loading) {
     return (
       <div className="flex h-screen items-center justify-center bg-background">
-        <p className="text-sm text-muted-foreground">Loading register...</p>
+        <p className="text-sm text-muted-foreground">Loading work page...</p>
       </div>
     );
   }
@@ -720,10 +761,11 @@ export default function RegisterPage() {
             </TabsList>
           </Tabs>
 
-          <div className="flex items-center gap-2">
+          <div className="inline-flex items-center gap-2 rounded-xl border border-border bg-background/80 px-2 py-1.5 backdrop-blur-sm">
             <Button
               variant={showSidebars ? "destructive" : "outline"}
               size="sm"
+              className="h-7 text-sm"
               onClick={() => setShowSidebars((prev) => !prev)}
               aria-label="Toggle expert mode"
             >
@@ -732,11 +774,12 @@ export default function RegisterPage() {
               <div className="relative" ref={taskMenuRef}>
                 <Button
                   variant="outline"
-                  size="icon-sm"
+                  size="sm"
+                  className="h-7 text-sm"
                   onClick={() => setShowTaskModal((prev) => !prev)}
                   aria-label="Open task"
                 >
-                  <ListTodo className="size-4" />
+                  task
                 </Button>
                 {showTaskModal && (
                   <div
@@ -746,8 +789,8 @@ export default function RegisterPage() {
                   </div>
                 )}
             </div>
-            <Button variant="outline" size="icon-sm" onClick={() => navigate("/assays")} aria-label="Go to assays">
-              <Home className="size-4" />
+            <Button variant="outline" size="sm" className="h-7 text-sm" onClick={() => navigate("/setup")} aria-label="Go to setup">
+              home
             </Button>
           </div>
         </div>
@@ -800,22 +843,24 @@ export default function RegisterPage() {
         >
           {activeTab === "dashboard" ? (
             <>
-              <div className="flex flex-wrap items-center gap-2 border border-border bg-background px-4 py-2">
-                {dashboardSampleOptions.length === 0 ? (
-                  <span className="text-xs text-muted-foreground">No samples loaded</span>
-                ) : (
-                  dashboardSampleOptions.map((sampleName) => (
-                    <Button
-                      key={sampleName}
-                      size="sm"
-                      variant={filterButtonIsActive(sampleName) ? "secondary" : "outline"}
-                      onClick={() => toggleSampleFilter(sampleName)}
-                      className="h-7"
-                    >
-                      {sampleName}
-                    </Button>
-                  ))
-                )}
+              <div className="flex justify-center">
+                <div className="inline-flex w-fit flex-wrap items-center justify-center gap-2 rounded-xl border border-border bg-background/80 px-3 py-2">
+                  {dashboardSampleOptions.length === 0 ? (
+                    <span className="text-xs text-muted-foreground">No samples loaded</span>
+                  ) : (
+                    dashboardSampleOptions.map((sampleName) => (
+                      <Button
+                        key={sampleName}
+                        size="sm"
+                        variant={filterButtonIsActive(sampleName) ? "secondary" : "outline"}
+                        onClick={() => toggleSampleFilter(sampleName)}
+                        className="h-7"
+                      >
+                        {sampleName}
+                      </Button>
+                    ))
+                  )}
+                </div>
               </div>
               <div className="flex flex-1 overflow-auto rounded-md border border-border bg-background">
                 <div className="w-full">
@@ -907,16 +952,19 @@ export default function RegisterPage() {
                 </div>
               </div>
 
-              <div className="flex flex-1 items-center justify-center overflow-auto rounded-lg border border-border bg-muted/30 p-1">
-                <canvas
-                  ref={canvasRef}
-                  className="max-h-full max-w-full cursor-move object-contain"
-                  onPointerDown={handleCanvasPointerDown}
-                  onPointerMove={handleCanvasPointerMove}
-                  onPointerUp={handleCanvasPointerUp}
-                  onPointerCancel={handleCanvasPointerCancel}
-                  onContextMenu={(event) => event.preventDefault()}
-                />
+              <div className="flex flex-1 items-center justify-center overflow-auto">
+                <div className="flex aspect-square h-full w-auto max-h-full max-w-full items-center justify-center rounded-lg border border-border bg-muted/30 p-3">
+                  <canvas
+                    ref={canvasRef}
+                    className="max-h-full max-w-full cursor-move object-contain"
+                    onPointerDown={handleCanvasPointerDown}
+                    onPointerMove={handleCanvasPointerMove}
+                    onPointerUp={handleCanvasPointerUp}
+                    onPointerCancel={handleCanvasPointerCancel}
+                    onWheel={handleCanvasWheel}
+                    onContextMenu={(event) => event.preventDefault()}
+                  />
+                </div>
               </div>
 
               <div className="flex justify-center pt-3">

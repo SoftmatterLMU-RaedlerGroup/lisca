@@ -48,6 +48,11 @@ export interface AssaySample {
   position_slice: string;
 }
 
+export interface AssayChannelName {
+  channel: number;
+  name: string;
+}
+
 export interface RegisterParams {
   shape: "square" | "hex";
   a: number;
@@ -67,6 +72,7 @@ export interface AssayYaml {
   type: AssayType;
   data_folder: string;
   brightfield_channel: number;
+  channel_names?: AssayChannelName[];
   samples: AssaySample[];
   register: RegisterParams;
 }

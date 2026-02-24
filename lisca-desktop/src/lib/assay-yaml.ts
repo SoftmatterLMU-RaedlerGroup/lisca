@@ -24,6 +24,17 @@ export function normalizeAssayYaml(input: Partial<AssayYaml>): AssayYaml {
       typeof input.brightfield_channel === "number" && Number.isFinite(input.brightfield_channel)
         ? Math.max(0, Math.floor(input.brightfield_channel))
         : 0,
+    channel_names: Array.isArray(input.channel_names)
+      ? input.channel_names
+          .map((entry) => ({
+            channel:
+              typeof entry.channel === "number" && Number.isFinite(entry.channel)
+                ? Math.max(0, Math.floor(entry.channel))
+                : -1,
+            name: String(entry.name ?? "").trim(),
+          }))
+          .filter((entry) => entry.channel >= 0 && entry.name.length > 0)
+      : [],
     samples: Array.isArray(input.samples)
       ? input.samples
           .map((sample) => ({

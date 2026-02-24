@@ -9,7 +9,6 @@ export interface RegisterPersistEntry {
   selectedTime: number;
   selectedZ: number;
   selectedSampleIndex: number;
-  showSidebars: boolean;
   overlayOpacity: number;
 }
 
@@ -46,8 +45,7 @@ function normalizeEntry(value: unknown): RegisterPersistEntry | null {
     !isFiniteNumber(candidate.selectedChannel) ||
     !isFiniteNumber(candidate.selectedTime) ||
     !isFiniteNumber(candidate.selectedZ) ||
-    !isFiniteNumber(candidate.selectedSampleIndex) ||
-    typeof candidate.showSidebars !== "boolean"
+    !isFiniteNumber(candidate.selectedSampleIndex)
   ) {
     return null;
   }
@@ -58,7 +56,6 @@ function normalizeEntry(value: unknown): RegisterPersistEntry | null {
     selectedTime: Math.floor(candidate.selectedTime),
     selectedZ: Math.floor(candidate.selectedZ),
     selectedSampleIndex: Math.floor(candidate.selectedSampleIndex),
-    showSidebars: candidate.showSidebars,
     overlayOpacity:
       typeof candidate.overlayOpacity === "number" && Number.isFinite(candidate.overlayOpacity)
         ? Math.max(0, Math.min(1, candidate.overlayOpacity))
