@@ -46,10 +46,10 @@ cd lisca-rs
 cargo run -- --help
 ```
 
-Rust delegates execution to Python by running:
+Rust execution is native in `lisca-rs`:
 
 ```bash
-uv run --project ../lisca-py lisca-py ...
+cargo run -- crop ...
 ```
 
-Override python project path with `LISCA_PY_PROJECT`.
+The `movie` command spawns `ffmpeg` as an external process for rendering output.
