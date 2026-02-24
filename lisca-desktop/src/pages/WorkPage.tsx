@@ -17,7 +17,7 @@ import {
 import { parseSliceStringOverValues } from "@/lib/slices";
 import { cn } from "@/lib/utils";
 import { loadRegisterPersistEntry, saveRegisterPersistEntry } from "@/register/persist";
-import type { AssayListItem, AssayYaml, FolderScan } from "@/lib/types";
+import type { AssayListItem, AssayYaml, FolderScan, TaskRecord } from "@/lib/types";
 
 interface ImageFrame {
   width: number;
@@ -27,6 +27,36 @@ interface ImageFrame {
 
 type RegisterMainTab = "dashboard" | "register" | "view" | "analyze";
 type DragMode = "none" | "pan" | "rotate" | "resize";
+
+function taskStatusClass(status: TaskRecord["status"]): string {
+  if (status === "running") return "text-amber-600";
+  if (status === "failed") return "text-destructive";
+  return "text-emerald-600";
+}
+
+function summarizeTaskRequest(task: TaskRecord): string {
+  const readNum = (key: string): number | null => {
+    const value = task.request[key];
+    return typeof value === "number" && Number.isFinite(value) ? value : null;
+  };
+  const readStr = (key: string): string | null => {
+    const value = task.request[key];
+    return typeof value === "string" && value.length > 0 ? value : null;
+  };
+  const pos = readNum("pos");
+  const channel = readNum("channel");
+  const time = readNum("time");
+  const z = readNum("z");
+  const grid = readStr("grid");
+  const parts = [
+    pos != null ? `pos ${pos}` : null,
+    channel != null ? `ch ${channel}` : null,
+    time != null ? `t ${time}` : null,
+    z != null ? `z ${z}` : null,
+    grid != null ? grid : null,
+  ].filter((value): value is string => value != null);
+  return parts.length > 0 ? parts.join(" | ") : "no request details";
+}
 
 function drawPatternGrid(
   ctx: CanvasRenderingContext2D,
@@ -253,6 +283,8 @@ export default function WorkPage() {
   const [showSidebars, setShowSidebars] = useState(false);
   const [showTaskModal, setShowTaskModal] = useState(false);
   const taskMenuRef = useRef<HTMLDivElement>(null);
+  const [tasks, setTasks] = useState<TaskRecord[]>([]);
+  const [loadingTasks, setLoadingTasks] = useState(false);
   const [hydratedPersist, setHydratedPersist] = useState(false);
   const [activeTab, setActiveTab] = useState<RegisterMainTab>(
     searchParams.get("tab") === "register" ? "register" : "dashboard",
@@ -279,6 +311,7 @@ export default function WorkPage() {
   const [selectedZ, setSelectedZ] = useState(0);
   const [selectedSampleIndex, setSelectedSampleIndex] = useState(0);
   const [overlayOpacity, setOverlayOpacity] = useState(0.35);
+  const [autoDetectingGrid, setAutoDetectingGrid] = useState<GridShape | null>(null);
 
   const refreshScan = useCallback(async () => {
     if (!assay) return;
@@ -289,6 +322,22 @@ export default function WorkPage() {
       // Keep current scan state if background refresh fails.
     }
   }, [assay]);
+
+  const refreshTasks = useCallback(async () => {
+    setLoadingTasks(true);
+    try {
+      const nextTasks = await api.tasks.list();
+      setTasks(nextTasks);
+    } catch {
+      // Ignore task list failures so main register flow remains usable.
+    } finally {
+      setLoadingTasks(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshTasks();
+  }, [refreshTasks]);
 
   useEffect(() => {
     let cancelled = false;
@@ -725,6 +774,111 @@ export default function WorkPage() {
     }));
   }, []);
 
+  const handleAutoDetect = useCallback(async (shape: GridShape) => {
+    if (!assay) return;
+    if (!image) {
+      setError("No image loaded for current selection.");
+      return;
+    }
+    const taskId = crypto.randomUUID();
+    const timestamp = new Date().toISOString();
+    const request = {
+      folder: assay.folder,
+      pos: selectedPos,
+      channel: selectedChannel,
+      time: selectedTime,
+      z: selectedZ,
+      grid: shape,
+      w: registerParams.w,
+      h: registerParams.h,
+    };
+    const queuedTask: TaskRecord = {
+      id: taskId,
+      kind: shape === "hex" ? "register.auto.hex" : "register.auto.square",
+      status: "running",
+      created_at: timestamp,
+      started_at: timestamp,
+      finished_at: null,
+      request: request as unknown as Record<string, unknown>,
+      result: null,
+      error: null,
+      logs: [],
+      progress_events: [
+        {
+          progress: 0,
+          message: "Running auto-detect",
+          timestamp,
+        },
+      ],
+    };
+    setAutoDetectingGrid(shape);
+    try {
+      await api.tasks.insert(queuedTask);
+      setTasks((prev) => [queuedTask, ...prev.filter((task) => task.id !== queuedTask.id)]);
+    } catch (error) {
+      setAutoDetectingGrid(null);
+      setError(error instanceof Error ? error.message : String(error));
+      return;
+    }
+
+    try {
+      const result = await api.tasks.runRegisterAutoDetect({
+        taskId,
+        ...request,
+      });
+      const finishedAt = new Date().toISOString();
+      setTasks((prev) =>
+        prev.map((task) =>
+          task.id === taskId
+            ? {
+                ...task,
+                status: result.ok ? "succeeded" : "failed",
+                finished_at: finishedAt,
+                error: result.ok ? null : result.error,
+                result: result.ok
+                  ? ({
+                      params: result.params,
+                      diagnostics: result.diagnostics ?? null,
+                    } as Record<string, unknown>)
+                  : null,
+                progress_events: [
+                  ...task.progress_events,
+                  {
+                    progress: result.ok ? 1 : 0,
+                    message: result.ok ? "Auto-detect completed" : `Auto-detect failed: ${result.error}`,
+                    timestamp: finishedAt,
+                  },
+                ],
+              }
+            : task,
+        ),
+      );
+      if (!result.ok) {
+        setError(result.error);
+        return;
+      }
+      const nextShape: GridShape = result.params.shape === "hex" ? "hex" : "square";
+      setGridShape(nextShape);
+      setRegisterParams({
+        shape: nextShape,
+        a: result.params.a,
+        alpha: result.params.alpha,
+        b: result.params.b,
+        beta: result.params.beta,
+        w: result.params.w,
+        h: result.params.h,
+        dx: result.params.dx,
+        dy: result.params.dy,
+      });
+      setError(null);
+    } catch (error) {
+      setError(error instanceof Error ? error.message : String(error));
+    } finally {
+      void refreshTasks();
+      setAutoDetectingGrid(null);
+    }
+  }, [assay, image, refreshTasks, registerParams.h, registerParams.w, selectedChannel, selectedPos, selectedTime, selectedZ]);
+
   const handleSave = useCallback(async () => {
     if (!assay) return;
     if (!image) {
@@ -768,6 +922,7 @@ export default function WorkPage() {
 
   useEffect(() => {
     if (!showTaskModal) return;
+    void refreshTasks();
 
     const handleDocumentClick = (event: MouseEvent) => {
       const target = event.target as Node | null;
@@ -790,7 +945,9 @@ export default function WorkPage() {
       document.removeEventListener("mousedown", handleDocumentClick);
       document.removeEventListener("keydown", handleEscape);
     };
-  }, [showTaskModal]);
+  }, [refreshTasks, showTaskModal]);
+
+  const hasCompletedTasks = tasks.some((task) => task.status === "succeeded" || task.status === "failed");
 
   if (loading) {
     return (
@@ -843,9 +1000,46 @@ export default function WorkPage() {
                 </Button>
                 {showTaskModal && (
                   <div
-                    className="absolute right-0 top-full z-50 mt-2 w-64 rounded-md border border-border bg-background p-3 shadow-lg"
+                    className="absolute right-0 top-full z-50 mt-2 w-[28rem] rounded-md border border-border bg-background p-3 text-xs lowercase shadow-lg"
                   >
-                    <div className="h-24" />
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-sm font-medium tracking-wider text-muted-foreground lowercase">tasks</span>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-6 px-2 text-xs"
+                          disabled={!hasCompletedTasks || loadingTasks}
+                          onClick={async () => {
+                            await api.tasks.deleteCompleted();
+                            await refreshTasks();
+                          }}
+                        >
+                          clear done
+                        </Button>
+                      </div>
+                      <Separator />
+                      <div className="max-h-72 space-y-2 overflow-y-auto pr-1">
+                        {loadingTasks ? (
+                          <p className="text-xs text-muted-foreground">loading tasks...</p>
+                        ) : tasks.length === 0 ? (
+                          <p className="text-xs text-muted-foreground">no tasks yet</p>
+                        ) : (
+                          tasks.map((task) => (
+                            <div key={task.id} className="space-y-1 rounded-md border border-border/70 p-2">
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="truncate text-xs font-medium">{task.kind}</span>
+                                <span className={cn("text-xs font-medium", taskStatusClass(task.status))}>
+                                  {task.status}
+                                </span>
+                              </div>
+                              <p className="truncate text-[11px] text-muted-foreground">{summarizeTaskRequest(task)}</p>
+                              {task.error && <p className="line-clamp-2 text-[11px] text-destructive">{task.error}</p>}
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
                   </div>
                 )}
             </div>
@@ -1033,35 +1227,19 @@ export default function WorkPage() {
                     variant="outline"
                     size="sm"
                     className="h-7 text-sm"
-                    onClick={() => {
-                      setGridShape("square");
-                      setRegisterParams((prev) => ({
-                        ...prev,
-                        shape: "square",
-                        b: prev.a,
-                        alpha: 0,
-                        beta: 90,
-                      }));
-                    }}
+                    disabled={!image || autoDetectingGrid !== null}
+                    onClick={() => void handleAutoDetect("square")}
                   >
-                    auto square
+                    {autoDetectingGrid === "square" ? "auto square..." : "auto square"}
                   </Button>
                   <Button
                     variant="outline"
                     size="sm"
                     className="h-7 text-sm"
-                    onClick={() => {
-                      setGridShape("hex");
-                      setRegisterParams((prev) => ({
-                        ...prev,
-                        shape: "hex",
-                        b: prev.a,
-                        alpha: 0,
-                        beta: 60,
-                      }));
-                    }}
+                    disabled={!image || autoDetectingGrid !== null}
+                    onClick={() => void handleAutoDetect("hex")}
                   >
-                    auto hex
+                    {autoDetectingGrid === "hex" ? "auto hex..." : "auto hex"}
                   </Button>
                   <Button
                     variant="outline"

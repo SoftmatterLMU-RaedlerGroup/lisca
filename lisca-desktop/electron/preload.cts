@@ -26,6 +26,15 @@ contextBridge.exposeInMainWorld("liscaDesktop", {
     scan: (folder: string) => ipcRenderer.invoke("register:scan", folder),
     readImage: (payload: unknown) => ipcRenderer.invoke("register:read-image", payload),
     readRegistration: (payload: unknown) => ipcRenderer.invoke("register:read-registration", payload),
+    autoDetect: (payload: unknown) => ipcRenderer.invoke("register:auto-detect", payload),
     saveBbox: (payload: unknown) => ipcRenderer.invoke("register:save-bbox", payload),
+  },
+  tasks: {
+    insertTask: (task: unknown) => ipcRenderer.invoke("tasks:insert-task", task) as Promise<boolean>,
+    updateTask: (id: string, updates: unknown) =>
+      ipcRenderer.invoke("tasks:update-task", id, updates) as Promise<boolean>,
+    listTasks: () => ipcRenderer.invoke("tasks:list-tasks"),
+    deleteCompletedTasks: () => ipcRenderer.invoke("tasks:delete-completed-tasks") as Promise<number>,
+    runRegisterAutoDetect: (payload: unknown) => ipcRenderer.invoke("tasks:run-register-auto-detect", payload),
   },
 });

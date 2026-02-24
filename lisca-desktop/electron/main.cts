@@ -1,4 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain } from "electron";
+import { execFile } from "node:child_process";
 import path from "node:path";
 import { constants } from "node:fs";
 import {
@@ -94,6 +95,79 @@ interface ReadRegistrationFailure {
 
 type ReadRegistrationResponse = ReadRegistrationSuccess | ReadRegistrationFailure;
 
+interface AutoRegisterRequest {
+  folder: string;
+  pos: number;
+  channel: number;
+  time: number;
+  z: number;
+  grid: "square" | "hex";
+  w: number;
+  h: number;
+}
+
+interface AutoRegisterParams {
+  shape: "square" | "hex";
+  a: number;
+  alpha: number;
+  b: number;
+  beta: number;
+  w: number;
+  h: number;
+  dx: number;
+  dy: number;
+}
+
+interface AutoRegisterDiagnostics {
+  detected_points: number;
+  inlier_points: number;
+  initial_mse: number;
+  final_mse: number;
+}
+
+interface AutoRegisterSuccess {
+  ok: true;
+  params: AutoRegisterParams;
+  diagnostics?: AutoRegisterDiagnostics;
+}
+
+interface AutoRegisterFailure {
+  ok: false;
+  error: string;
+  code?: "binary_not_found" | "exec_error" | "invalid_json" | "invalid_payload";
+  stderr?: string;
+}
+
+type AutoRegisterResponse = AutoRegisterSuccess | AutoRegisterFailure;
+
+interface TaskProgressEvent {
+  progress: number;
+  message: string;
+  timestamp: string;
+}
+
+interface TaskRecord {
+  id: string;
+  kind: string;
+  status: "running" | "succeeded" | "failed";
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  request: Record<string, unknown>;
+  result: Record<string, unknown> | null;
+  error: string | null;
+  logs: string[];
+  progress_events: TaskProgressEvent[];
+}
+
+type TaskUpdate = Partial<
+  Pick<TaskRecord, "status" | "started_at" | "finished_at" | "result" | "error" | "logs" | "progress_events">
+>;
+
+interface RunRegisterAutoDetectRequest extends AutoRegisterRequest {
+  taskId: string;
+}
+
 let dbRef: Database | null = null;
 const TIFF_INDEX_CACHE_TTL_MS = 2500;
 
@@ -162,6 +236,22 @@ async function ensureDb(): Promise<Database> {
       folder TEXT NOT NULL UNIQUE,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
+    );
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS tasks (
+      id TEXT PRIMARY KEY,
+      kind TEXT NOT NULL,
+      status TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      started_at TEXT,
+      finished_at TEXT,
+      request_json TEXT NOT NULL,
+      result_json TEXT,
+      error TEXT,
+      logs_json TEXT NOT NULL,
+      progress_events_json TEXT NOT NULL
     );
   `);
 
@@ -269,6 +359,119 @@ async function upsertAssay(meta: AssayMeta): Promise<{ id: string }> {
 
   await persistDb(db);
   return { id: resolvedId };
+}
+
+function parseJsonValue<T>(value: unknown, fallback: T): T {
+  if (typeof value !== "string") return fallback;
+  try {
+    return JSON.parse(value) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+async function insertTask(task: TaskRecord): Promise<void> {
+  const db = await ensureDb();
+  db.run(
+    `INSERT INTO tasks (id, kind, status, created_at, started_at, finished_at, request_json, result_json, error, logs_json, progress_events_json)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      task.id,
+      task.kind,
+      task.status,
+      task.created_at,
+      task.started_at,
+      task.finished_at,
+      JSON.stringify(task.request ?? {}),
+      task.result != null ? JSON.stringify(task.result) : null,
+      task.error,
+      JSON.stringify(task.logs ?? []),
+      JSON.stringify(task.progress_events ?? []),
+    ],
+  );
+  await persistDb(db);
+}
+
+async function updateTask(id: string, updates: TaskUpdate): Promise<void> {
+  const db = await ensureDb();
+  const sets: string[] = [];
+  const values: Array<string | null> = [];
+
+  if (updates.status !== undefined) {
+    sets.push("status = ?");
+    values.push(updates.status);
+  }
+  if (updates.started_at !== undefined) {
+    sets.push("started_at = ?");
+    values.push(updates.started_at);
+  }
+  if (updates.finished_at !== undefined) {
+    sets.push("finished_at = ?");
+    values.push(updates.finished_at);
+  }
+  if (updates.result !== undefined) {
+    sets.push("result_json = ?");
+    values.push(updates.result != null ? JSON.stringify(updates.result) : null);
+  }
+  if (updates.error !== undefined) {
+    sets.push("error = ?");
+    values.push(updates.error);
+  }
+  if (updates.logs !== undefined) {
+    sets.push("logs_json = ?");
+    values.push(JSON.stringify(updates.logs ?? []));
+  }
+  if (updates.progress_events !== undefined) {
+    sets.push("progress_events_json = ?");
+    values.push(JSON.stringify(updates.progress_events ?? []));
+  }
+  if (sets.length === 0) return;
+
+  values.push(id);
+  db.run(`UPDATE tasks SET ${sets.join(", ")} WHERE id = ?`, values);
+  await persistDb(db);
+}
+
+async function listTasks(): Promise<TaskRecord[]> {
+  const db = await ensureDb();
+  const stmt = db.prepare(
+    "SELECT id, kind, status, created_at, started_at, finished_at, request_json, result_json, error, logs_json, progress_events_json FROM tasks ORDER BY created_at DESC",
+  );
+
+  const rows: TaskRecord[] = [];
+  while (stmt.step()) {
+    const row = stmt.getAsObject() as Record<string, unknown>;
+    rows.push({
+      id: String(row.id ?? ""),
+      kind: String(row.kind ?? ""),
+      status: row.status === "running" ? "running" : row.status === "failed" ? "failed" : "succeeded",
+      created_at: String(row.created_at ?? ""),
+      started_at: row.started_at == null ? null : String(row.started_at),
+      finished_at: row.finished_at == null ? null : String(row.finished_at),
+      request: parseJsonValue<Record<string, unknown>>(row.request_json, {}),
+      result: parseJsonValue<Record<string, unknown> | null>(row.result_json, null),
+      error: row.error == null ? null : String(row.error),
+      logs: parseJsonValue<string[]>(row.logs_json, []),
+      progress_events: parseJsonValue<TaskProgressEvent[]>(row.progress_events_json, []),
+    });
+  }
+  stmt.free();
+  return rows;
+}
+
+async function deleteCompletedTasks(): Promise<number> {
+  const db = await ensureDb();
+  const countStmt = db.prepare("SELECT COUNT(*) AS count FROM tasks WHERE status IN ('succeeded', 'failed')");
+  let count = 0;
+  if (countStmt.step()) {
+    const row = countStmt.getAsObject() as { count?: unknown };
+    count = Number(row.count ?? 0);
+  }
+  countStmt.free();
+
+  db.run("DELETE FROM tasks WHERE status IN ('succeeded', 'failed')");
+  await persistDb(db);
+  return Number.isFinite(count) ? count : 0;
 }
 
 function normalizeRgbaInPlace(rgba: Uint8Array, width: number, height: number): void {
@@ -588,6 +791,251 @@ async function readRegistration(payload: ReadRegistrationRequest): Promise<ReadR
   }
 }
 
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function parseAutoRegisterResult(payload: AutoRegisterRequest, parsed: unknown): AutoRegisterSuccess | null {
+  if (!parsed || typeof parsed !== "object") return null;
+  const record = parsed as Record<string, unknown>;
+  const shape = record.shape === "hex" ? "hex" : record.shape === "square" ? "square" : null;
+  if (!shape) return null;
+
+  const readNumber = (key: string, fallback?: number): number | null => {
+    const value = record[key];
+    if (isFiniteNumber(value)) return value;
+    if (typeof fallback === "number") return fallback;
+    return null;
+  };
+
+  const a = readNumber("a");
+  const alpha = readNumber("alpha");
+  const b = readNumber("b");
+  const beta = readNumber("beta");
+  const w = readNumber("w", payload.w);
+  const h = readNumber("h", payload.h);
+  const dx = readNumber("dx", 0);
+  const dy = readNumber("dy", 0);
+  if (
+    a == null ||
+    alpha == null ||
+    b == null ||
+    beta == null ||
+    w == null ||
+    h == null ||
+    dx == null ||
+    dy == null
+  ) {
+    return null;
+  }
+
+  let diagnostics: AutoRegisterDiagnostics | undefined;
+  const maybeDiagnostics = record.diagnostics;
+  if (maybeDiagnostics && typeof maybeDiagnostics === "object") {
+    const d = maybeDiagnostics as Record<string, unknown>;
+    if (
+      isFiniteNumber(d.detected_points) &&
+      isFiniteNumber(d.inlier_points) &&
+      isFiniteNumber(d.initial_mse) &&
+      isFiniteNumber(d.final_mse)
+    ) {
+      diagnostics = {
+        detected_points: d.detected_points,
+        inlier_points: d.inlier_points,
+        initial_mse: d.initial_mse,
+        final_mse: d.final_mse,
+      };
+    }
+  }
+
+  return {
+    ok: true,
+    params: {
+      shape,
+      a,
+      alpha,
+      b,
+      beta,
+      w,
+      h,
+      dx,
+      dy,
+    },
+    diagnostics,
+  };
+}
+
+function candidateLiscaRsBinaries(): string[] {
+  const exe = process.platform === "win32" ? "lisca-rs.exe" : "lisca-rs";
+  const envPath = typeof process.env.LISCA_RS_BIN === "string" ? process.env.LISCA_RS_BIN.trim() : "";
+  if (envPath.length > 0) return [envPath];
+  return [path.resolve(process.cwd(), "..", "lisca-rs", "target", "release", exe)];
+}
+
+interface ExecFileErrorPayload {
+  error: NodeJS.ErrnoException;
+  stdout: string;
+  stderr: string;
+}
+
+function execCommand(
+  binary: string,
+  args: string[],
+  cwd?: string,
+): Promise<{ stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      binary,
+      args,
+      { cwd, windowsHide: true, maxBuffer: 16 * 1024 * 1024 },
+      (error, stdout, stderr) => {
+        if (error) {
+          reject({
+            error: error as NodeJS.ErrnoException,
+            stdout: String(stdout ?? ""),
+            stderr: String(stderr ?? ""),
+          } satisfies ExecFileErrorPayload);
+          return;
+        }
+        resolve({
+          stdout: String(stdout ?? ""),
+          stderr: String(stderr ?? ""),
+        });
+      },
+    );
+  });
+}
+
+function decodeAutoRegisterStdout(
+  payload: AutoRegisterRequest,
+  stdout: string,
+  stderr: string,
+): AutoRegisterResponse {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    return {
+      ok: false,
+      code: "invalid_json",
+      error: "lisca-rs register produced non-JSON stdout.",
+      stderr: stderr.trim() || undefined,
+    };
+  }
+  const normalized = parseAutoRegisterResult(payload, parsed);
+  if (!normalized) {
+    return {
+      ok: false,
+      code: "invalid_payload",
+      error: "lisca-rs register JSON payload is missing required numeric fields.",
+      stderr: stderr.trim() || undefined,
+    };
+  }
+  return normalized;
+}
+
+async function autoDetectRegister(payload: AutoRegisterRequest): Promise<AutoRegisterResponse> {
+  const args = [
+    "register",
+    "--input",
+    payload.folder,
+    "--pos",
+    String(payload.pos),
+    "--channel",
+    String(payload.channel),
+    "--time",
+    String(payload.time),
+    "--z",
+    String(payload.z),
+    "--grid",
+    payload.grid,
+    "--w",
+    String(payload.w),
+    "--h",
+    String(payload.h),
+    "--no-progress",
+  ];
+
+  const binaries = candidateLiscaRsBinaries();
+  let sawBinary = false;
+  for (const binary of binaries) {
+    try {
+      const result = await execCommand(binary, args);
+      sawBinary = true;
+      return decodeAutoRegisterStdout(payload, result.stdout, result.stderr);
+    } catch (error) {
+      const failure = error as ExecFileErrorPayload;
+      if (failure?.error?.code === "ENOENT") {
+        continue;
+      }
+      const stderr = typeof failure.stderr === "string" ? failure.stderr.trim() : "";
+      const stdout = typeof failure.stdout === "string" ? failure.stdout.trim() : "";
+      const fallback = failure.error instanceof Error ? failure.error.message : "Failed to run lisca-rs register.";
+      return {
+        ok: false,
+        code: "exec_error",
+        error: stderr || stdout || fallback,
+        stderr: stderr || undefined,
+      };
+    }
+  }
+
+  if (!sawBinary) {
+    const attempted = binaries.join(", ");
+    return {
+      ok: false,
+      code: "binary_not_found",
+      error:
+        "lisca-rs release binary not found. Build --release and set LISCA_RS_BIN if needed. Tried: " +
+        attempted,
+    };
+  }
+
+  return { ok: false, code: "exec_error", error: "Failed to run lisca-rs register." };
+}
+
+async function runAutoDetectTask(payload: RunRegisterAutoDetectRequest): Promise<AutoRegisterResponse> {
+  const startedAt = new Date().toISOString();
+  const startProgress: TaskProgressEvent = {
+    progress: 0,
+    message: "Running auto-detect",
+    timestamp: startedAt,
+  };
+  const finalProgress: TaskProgressEvent[] = [startProgress];
+
+  await updateTask(payload.taskId, {
+    status: "running",
+    started_at: startedAt,
+    finished_at: null,
+    error: null,
+    result: null,
+    progress_events: finalProgress,
+  });
+
+  const result = await autoDetectRegister(payload);
+  const finishedAt = new Date().toISOString();
+  finalProgress.push({
+    progress: result.ok ? 1 : 0,
+    message: result.ok ? "Auto-detect completed" : `Auto-detect failed: ${result.error}`,
+    timestamp: finishedAt,
+  });
+
+  await updateTask(payload.taskId, {
+    status: result.ok ? "succeeded" : "failed",
+    finished_at: finishedAt,
+    error: result.ok ? null : result.error,
+    result: result.ok
+      ? {
+          params: result.params,
+          diagnostics: result.diagnostics ?? null,
+        }
+      : null,
+    progress_events: finalProgress,
+  });
+
+  return result;
+}
+
 function registerIpc(): void {
   ipcMain.handle("assays:list", async () => listAssays());
   ipcMain.handle("assays:remove", async (_event, id: string) => removeAssay(id));
@@ -662,6 +1110,29 @@ function registerIpc(): void {
 
   ipcMain.handle("register:read-registration", async (_event, payload: ReadRegistrationRequest) =>
     readRegistration(payload),
+  );
+
+  ipcMain.handle("register:auto-detect", async (_event, payload: AutoRegisterRequest) =>
+    autoDetectRegister(payload),
+  );
+
+  ipcMain.handle("tasks:insert-task", async (_event, task: TaskRecord): Promise<boolean> => {
+    await insertTask(task);
+    return true;
+  });
+
+  ipcMain.handle("tasks:update-task", async (_event, id: string, updates: TaskUpdate): Promise<boolean> => {
+    await updateTask(id, updates);
+    return true;
+  });
+
+  ipcMain.handle("tasks:list-tasks", async (): Promise<TaskRecord[]> => listTasks());
+  ipcMain.handle("tasks:delete-completed-tasks", async (): Promise<number> => deleteCompletedTasks());
+
+  ipcMain.handle(
+    "tasks:run-register-auto-detect",
+    async (_event, payload: RunRegisterAutoDetectRequest): Promise<AutoRegisterResponse> =>
+      runAutoDetectTask(payload),
   );
 
   ipcMain.handle(

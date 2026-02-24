@@ -13,6 +13,7 @@ fn cli_help_works() {
     assert!(stdout.contains("Lisca Rust CLI"));
     assert!(stdout.contains("convert"));
     assert!(stdout.contains("crop"));
+    assert!(stdout.contains("register"));
     assert!(stdout.contains("movie"));
     assert!(stdout.contains("expression"));
     assert!(stdout.contains("killing"));

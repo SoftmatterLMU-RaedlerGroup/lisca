@@ -56,6 +56,62 @@ export interface ReadRegistrationFailure {
 
 export type ReadRegistrationResponse = ReadRegistrationSuccess | ReadRegistrationFailure;
 
+export interface AutoRegisterParams {
+  shape: "square" | "hex";
+  a: number;
+  alpha: number;
+  b: number;
+  beta: number;
+  w: number;
+  h: number;
+  dx: number;
+  dy: number;
+}
+
+export interface AutoRegisterDiagnostics {
+  detected_points: number;
+  inlier_points: number;
+  initial_mse: number;
+  final_mse: number;
+}
+
+export interface AutoRegisterSuccess {
+  ok: true;
+  params: AutoRegisterParams;
+  diagnostics?: AutoRegisterDiagnostics;
+}
+
+export interface AutoRegisterFailure {
+  ok: false;
+  error: string;
+  code?: "binary_not_found" | "exec_error" | "invalid_json" | "invalid_payload";
+  stderr?: string;
+}
+
+export type AutoRegisterResponse = AutoRegisterSuccess | AutoRegisterFailure;
+
+export type TaskStatus = "running" | "succeeded" | "failed";
+
+export interface TaskProgressEvent {
+  progress: number;
+  message: string;
+  timestamp: string;
+}
+
+export interface TaskRecord {
+  id: string;
+  kind: string;
+  status: TaskStatus;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  request: Record<string, unknown>;
+  result: Record<string, unknown> | null;
+  error: string | null;
+  logs: string[];
+  progress_events: TaskProgressEvent[];
+}
+
 export interface AssaySample {
   name: string;
   position_slice: string;

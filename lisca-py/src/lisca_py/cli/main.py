@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import typer
 
-from .commands import convert, crop, expression, killing, movie, tissue
+from .commands import convert, crop, expression, killing, movie, register, tissue
 
-app = typer.Typer(add_completion=False, help="lisca-py CLI: convert, crop, movie, expression, killing, tissue")
+app = typer.Typer(
+    add_completion=False,
+    help="lisca-py CLI: convert, crop, register, movie, expression, killing, tissue",
+)
 
 app.command("convert")(convert.command)
 app.command("crop")(crop.command)
+app.command("register")(register.command)
 app.command("movie")(movie.command)
 app.command("expression")(expression.command)
 app.command("killing")(killing.command)
