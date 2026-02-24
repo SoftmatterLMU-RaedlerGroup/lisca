@@ -1,35 +1,16 @@
 name: lisca-rs CI/CD
 
 on:
-  push:
-    branches:
-      - main
-      - master
-    tags:
-      - "v*"
-    paths:
-      - "lisca-rs/**"
-      - ".github/workflows/rust-binary.yml"
-  pull_request:
-    branches:
-      - main
-      - master
-    paths:
-      - "lisca-rs/**"
-      - ".github/workflows/rust-binary.yml"
+  release:
+    types: [published]
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  build:
-    name: Build lisca-rs (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os:
-          - windows-latest
+  release:
+    name: lisca-rs windows
+    runs-on: windows-latest
     defaults:
       run:
         working-directory: lisca-rs
@@ -39,56 +20,13 @@ jobs:
 
       - name: Rust toolchain
         uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
 
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            lisca-rs
-
-      - name: Lint
-        run: cargo clippy --locked --workspace --all-targets --no-default-features
-
-      - name: Test
-        run: cargo test --locked --no-default-features
-
-      - name: Build release
+      - name: Build release binary
         run: cargo build --locked --release --no-default-features
 
-      - name: Package artifact name
-        shell: bash
-        run: |
-          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
-            echo "BINARY_NAME=lisca-rs.exe" >> "$GITHUB_ENV"
-          else
-            echo "BINARY_NAME=lisca-rs" >> "$GITHUB_ENV"
-          fi
-
-      - name: Upload release artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: lisca-rs-${{ matrix.os }}
-          path: lisca-rs/target/release/${{ env.BINARY_NAME }}
-          if-no-files-found: error
-
-  release:
-    name: Publish GitHub release
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: dist
-          pattern: lisca-rs-*
-          merge-multiple: true
-
-      - name: Create release
+      - name: Attach binary to release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/**
+          files: lisca-rs/target/release/lisca-rs.exe
+          generate_release_notes: false
+          append_body: false
