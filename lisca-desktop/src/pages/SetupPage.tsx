@@ -365,7 +365,7 @@ export default function SetupPage() {
     <AppContainer className="max-w-4xl">
       <div className="space-y-5 rounded-lg border bg-background/90 p-6 shadow-sm backdrop-blur-sm">
         <div className="flex items-center justify-between gap-3">
-          <h1 className="text-4xl tracking-tight">LISCA ASSAYS</h1>
+          <h1 className="text-4xl tracking-tight">LISCA assays</h1>
           <div className="flex items-center gap-2">
             <Button
               size="sm"
