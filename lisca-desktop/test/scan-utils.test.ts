@@ -38,12 +38,18 @@ describe("scan parser", () => {
       await writeFile(path.join(dir, "Pos2", "img_channel002_position002_time000000003_z005.tif"), "");
       await writeFile(path.join(dir, "Pos2", "img_channel001_position002_time000000000_z000.tif"), "");
       await writeFile(path.join(dir, "Pos001", "img_channel001_position001_time000000000_z000.tiff"), "");
+      await writeFile(path.join(dir, "Pos2_bbox.csv"), "");
+      await mkdir(path.join(dir, "Pos9_roi.zarr"));
+      await writeFile(path.join(dir, "Pos1_prediction.csv"), "");
 
       const scan = await scanFolder(dir);
       expect(scan.positions).toEqual([1, 2, 9]);
       expect(scan.channels).toEqual([1, 2]);
       expect(scan.times).toEqual([0, 3]);
       expect(scan.zSlices).toEqual([0, 5]);
+      expect(scan.registrationPositions).toEqual([2]);
+      expect(scan.roiPositions).toEqual([9]);
+      expect(scan.predictionPositions).toEqual([1]);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

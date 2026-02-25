@@ -29,6 +29,10 @@ contextBridge.exposeInMainWorld("liscaDesktop", {
     autoDetect: (payload: unknown) => ipcRenderer.invoke("register:auto-detect", payload),
     saveBbox: (payload: unknown) => ipcRenderer.invoke("register:save-bbox", payload),
   },
+  roi: {
+    discover: (payload: unknown) => ipcRenderer.invoke("roi:discover", payload),
+    loadFrame: (payload: unknown) => ipcRenderer.invoke("roi:load-frame", payload),
+  },
   tasks: {
     insertTask: (task: unknown) => ipcRenderer.invoke("tasks:insert-task", task) as Promise<boolean>,
     updateTask: (id: string, updates: unknown) =>
@@ -36,5 +40,22 @@ contextBridge.exposeInMainWorld("liscaDesktop", {
     listTasks: () => ipcRenderer.invoke("tasks:list-tasks"),
     deleteCompletedTasks: () => ipcRenderer.invoke("tasks:delete-completed-tasks") as Promise<number>,
     runRegisterAutoDetect: (payload: unknown) => ipcRenderer.invoke("tasks:run-register-auto-detect", payload),
+    runCrop: (payload: unknown) => ipcRenderer.invoke("tasks:run-crop", payload),
+    runKillingPredict: (payload: unknown) => ipcRenderer.invoke("tasks:run-killing-predict", payload),
+  },
+  application: {
+    loadPredictionCsv: (payload: unknown) => ipcRenderer.invoke("application:load-prediction-csv", payload),
+  },
+  settings: {
+    downloadAssets: () => ipcRenderer.invoke("settings:download-assets"),
+    getAssetStatus: () => ipcRenderer.invoke("settings:asset-status"),
+    onDownloadAssetsProgress: (callback: (event: unknown) => void) => {
+      const channel = "settings:download-assets-progress";
+      const listener = (_event: Electron.IpcRendererEvent, payload: unknown) => callback(payload);
+      ipcRenderer.on(channel, listener);
+      return () => {
+        ipcRenderer.removeListener(channel, listener);
+      };
+    },
   },
 });

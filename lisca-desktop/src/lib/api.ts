@@ -2,7 +2,11 @@ import type {
   AssayListItem,
   AssayMeta,
   AutoRegisterResponse,
+  DownloadAssetsProgress,
+  DiscoverRoiResponse,
   FolderScan,
+  KillPredictionRow,
+  LoadRoiFrameResponse,
   ReadRegistrationResponse,
   ReadImageResponse,
   TaskRecord,
@@ -48,6 +52,18 @@ export const api = {
       registrationYaml?: string;
     }) => window.liscaDesktop.register.saveBbox(payload),
   },
+  roi: {
+    discover: (payload: { folder: string; pos: number }): Promise<DiscoverRoiResponse> =>
+      window.liscaDesktop.roi.discover(payload),
+    loadFrame: (payload: {
+      folder: string;
+      pos: number;
+      cropId: string;
+      t: number;
+      c: number;
+      z: number;
+    }): Promise<LoadRoiFrameResponse> => window.liscaDesktop.roi.loadFrame(payload),
+  },
   tasks: {
     insert: (task: TaskRecord): Promise<boolean> => window.liscaDesktop.tasks.insertTask(task),
     update: (
@@ -69,6 +85,76 @@ export const api = {
       w: number;
       h: number;
     }): Promise<AutoRegisterResponse> => window.liscaDesktop.tasks.runRegisterAutoDetect(payload),
+    runCrop: (payload: {
+      taskId: string;
+      folder: string;
+      pos: number;
+      background: boolean;
+    }): Promise<
+      | {
+          ok: true;
+          output: string;
+        }
+      | {
+          ok: false;
+          error: string;
+          code?: "binary_not_found" | "exec_error";
+        }
+    > => window.liscaDesktop.tasks.runCrop(payload),
+    runKillingPredict: (payload: {
+      taskId: string;
+      folder: string;
+      pos: number;
+      batchSize?: number;
+      cpu?: boolean;
+    }): Promise<
+      | {
+          ok: true;
+          output: string;
+          rows: KillPredictionRow[];
+        }
+      | {
+          ok: false;
+          error: string;
+          code?: "binary_not_found" | "exec_error";
+        }
+    > => window.liscaDesktop.tasks.runKillingPredict(payload),
+  },
+  application: {
+    loadPredictionCsv: (payload: {
+      folder: string;
+      pos: number;
+    }): Promise<{ ok: true; rows: KillPredictionRow[] } | { ok: false; error: string }> =>
+      window.liscaDesktop.application.loadPredictionCsv(payload),
+  },
+  settings: {
+    downloadAssets: (): Promise<
+      | {
+          ok: true;
+          modelDir: string;
+          ffmpegPath: string;
+          downloadedFiles: string[];
+        }
+      | {
+          ok: false;
+          error: string;
+        }
+    > => window.liscaDesktop.settings.downloadAssets(),
+    onDownloadAssetsProgress: (callback: (event: DownloadAssetsProgress) => void): (() => void) =>
+      window.liscaDesktop.settings.onDownloadAssetsProgress(callback),
+    getAssetStatus: (): Promise<
+      | {
+          ok: true;
+          modelPath: string;
+          ffmpegPath: string;
+          missing: string[];
+          allPresent: boolean;
+        }
+      | {
+          ok: false;
+          error: string;
+        }
+    > => window.liscaDesktop.settings.getAssetStatus(),
   },
 };
 

@@ -1,0 +1,65 @@
+name: Release Build
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-lisca-rs:
+    name: Build lisca-rs (Windows)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build lisca-rs
+        working-directory: lisca-rs
+        run: cargo build --release
+
+      - name: Upload lisca-rs artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lisca-rs-windows-x86_64
+          path: lisca-rs/target/release/lisca-rs.exe
+          if-no-files-found: error
+
+  build-lisca-desktop:
+    name: Build lisca-desktop (Windows)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        working-directory: lisca-desktop
+        run: bun install --frozen-lockfile
+
+      - name: Build lisca-desktop
+        working-directory: lisca-desktop
+        run: bun run build
+
+      - name: Package lisca-desktop
+        working-directory: lisca-desktop
+        run: bun run pack
+
+      - name: Upload lisca-desktop artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lisca-desktop-windows-x86_64
+          path: |
+            lisca-desktop/release/*
+            lisca-desktop/dist/*
+            lisca-desktop/electron-dist/*
+          if-no-files-found: error

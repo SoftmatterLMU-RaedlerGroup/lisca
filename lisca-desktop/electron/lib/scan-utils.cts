@@ -13,7 +13,9 @@ export interface FolderScan {
   channels: number[];
   times: number[];
   zSlices: number[];
-  registeredPositions: number[];
+  registrationPositions: number[];
+  roiPositions: number[];
+  predictionPositions: number[];
 }
 
 export function parsePosDirName(name: string): number | null {
@@ -153,14 +155,36 @@ export async function scanFolder(folderPath: string): Promise<FolderScan> {
     fallbackZSlices = parsed.zSlices;
   }
 
-  const registerCandidates = entries
+  const registrationCandidates = entries
     .filter((entry) => entry.isFile())
     .map((entry) => entry.name)
     .map((name) => name.match(/^Pos(\d+)_bbox\.csv$/i))
     .filter((match): match is RegExpMatchArray => match != null)
     .map((match) => Number.parseInt(match[1], 10));
 
-  const registeredPositions = registerCandidates
+  const registrationPositions = registrationCandidates
+    .filter((value, index, arr) => Number.isFinite(value) && arr.indexOf(value) === index)
+    .sort((a, b) => a - b);
+
+  const roiCandidates = entries
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .map((name) => name.match(/^Pos(\d+)_roi\.zarr$/i))
+    .filter((match): match is RegExpMatchArray => match != null)
+    .map((match) => Number.parseInt(match[1], 10));
+
+  const roiPositions = roiCandidates
+    .filter((value, index, arr) => Number.isFinite(value) && arr.indexOf(value) === index)
+    .sort((a, b) => a - b);
+
+  const predictionCandidates = entries
+    .filter((entry) => entry.isFile())
+    .map((entry) => entry.name)
+    .map((name) => name.match(/^Pos(\d+)_prediction\.csv$/i))
+    .filter((match): match is RegExpMatchArray => match != null)
+    .map((match) => Number.parseInt(match[1], 10));
+
+  const predictionPositions = predictionCandidates
     .filter((value, index, arr) => Number.isFinite(value) && arr.indexOf(value) === index)
     .sort((a, b) => a - b);
 
@@ -171,7 +195,9 @@ export async function scanFolder(folderPath: string): Promise<FolderScan> {
     channels: channels.length > 0 ? channels : fallbackChannels,
     times: times.length > 0 ? times : fallbackTimes,
     zSlices: zSlices.length > 0 ? zSlices : fallbackZSlices,
-    registeredPositions,
+    registrationPositions,
+    roiPositions,
+    predictionPositions,
   };
 }
 

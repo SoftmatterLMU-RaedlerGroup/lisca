@@ -41,7 +41,9 @@ declare global {
           channels: number[];
           times: number[];
           zSlices: number[];
-          registeredPositions: number[];
+          registrationPositions: number[];
+          roiPositions: number[];
+          predictionPositions: number[];
         }>;
         readImage: (payload: {
           folder: string;
@@ -119,6 +121,36 @@ declare global {
           csv: string;
           registrationYaml?: string;
         }) => Promise<{ ok: true } | { ok: false; error: string }>;
+      };
+      roi: {
+        discover: (payload: {
+          folder: string;
+          pos: number;
+        }) => Promise<{
+          crops: Array<{
+            cropId: string;
+            shape: number[];
+          }>;
+        }>;
+        loadFrame: (payload: {
+          folder: string;
+          pos: number;
+          cropId: string;
+          t: number;
+          c: number;
+          z: number;
+        }) => Promise<
+          | {
+              ok: true;
+              width: number;
+              height: number;
+              data: ArrayBuffer;
+            }
+          | {
+              ok: false;
+              error: string;
+            }
+        >;
       };
       tasks: {
         insertTask: (task: {
@@ -210,6 +242,95 @@ declare global {
               error: string;
               code?: "binary_not_found" | "exec_error" | "invalid_json" | "invalid_payload";
               stderr?: string;
+            }
+        >;
+        runCrop: (payload: {
+          taskId: string;
+          folder: string;
+          pos: number;
+          background: boolean;
+        }) => Promise<
+          | {
+              ok: true;
+              output: string;
+            }
+          | {
+              ok: false;
+              error: string;
+              code?: "binary_not_found" | "exec_error";
+            }
+        >;
+        runKillingPredict: (payload: {
+          taskId: string;
+          folder: string;
+          pos: number;
+          batchSize?: number;
+          cpu?: boolean;
+        }) => Promise<
+          | {
+              ok: true;
+              output: string;
+              rows: Array<{
+                t: number;
+                crop: string;
+                label: boolean;
+              }>;
+            }
+          | {
+              ok: false;
+              error: string;
+              code?: "binary_not_found" | "exec_error";
+            }
+        >;
+      };
+      application: {
+        loadPredictionCsv: (payload: {
+          folder: string;
+          pos: number;
+        }) => Promise<
+          | {
+              ok: true;
+              rows: Array<{
+                t: number;
+                crop: string;
+                label: boolean;
+              }>;
+            }
+          | {
+              ok: false;
+              error: string;
+            }
+        >;
+      };
+      settings: {
+        downloadAssets: () => Promise<
+          | {
+              ok: true;
+              modelDir: string;
+              ffmpegPath: string;
+              downloadedFiles: string[];
+            }
+          | {
+              ok: false;
+              error: string;
+            }
+        >;
+        onDownloadAssetsProgress: (callback: (event: {
+          phase: "start" | "model" | "ffmpeg" | "extract" | "finalize" | "done" | "error";
+          progress: number;
+          message: string;
+        }) => void) => () => void;
+        getAssetStatus: () => Promise<
+          | {
+              ok: true;
+              modelPath: string;
+              ffmpegPath: string;
+              missing: string[];
+              allPresent: boolean;
+            }
+          | {
+              ok: false;
+              error: string;
             }
         >;
       };

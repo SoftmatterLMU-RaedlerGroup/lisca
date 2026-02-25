@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { ChevronLeft, ChevronRight, Check, X } from "lucide-react";
+import { createPortal } from "react-dom";
+import { ChevronLeft, ChevronRight, Check, Crop, Sparkles, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { Slider } from "@/components/ui/slider";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import AnalyzeTab from "@/components/work/AnalyzeTab";
+import ViewTab from "@/components/work/ViewTab";
 import { api } from "@/lib/api";
 import { parseAssayYaml } from "@/lib/assay-yaml";
 import { buildBboxCsv, type RegisterShape } from "@/lib/bbox";
@@ -27,6 +30,13 @@ interface ImageFrame {
 
 type RegisterMainTab = "dashboard" | "register" | "view" | "analyze";
 type DragMode = "none" | "pan" | "rotate" | "resize";
+
+function parseWorkTab(value: string | null): RegisterMainTab {
+  if (value === "register" || value === "view" || value === "analyze" || value === "dashboard") {
+    return value;
+  }
+  return "dashboard";
+}
 
 function taskStatusClass(status: TaskRecord["status"]): string {
   if (status === "running") return "text-amber-600";
@@ -286,11 +296,10 @@ export default function WorkPage() {
   const [tasks, setTasks] = useState<TaskRecord[]>([]);
   const [loadingTasks, setLoadingTasks] = useState(false);
   const [hydratedPersist, setHydratedPersist] = useState(false);
-  const [activeTab, setActiveTab] = useState<RegisterMainTab>(
-    searchParams.get("tab") === "register" ? "register" : "dashboard",
-  );
+  const [activeTab, setActiveTab] = useState<RegisterMainTab>(parseWorkTab(searchParams.get("tab")));
   const [selectedSampleFilters, setSelectedSampleFilters] = useState<string[]>([]);
   const [gridShape, setGridShape] = useState<GridShape>("square");
+  const [dashboardContextMenu, setDashboardContextMenu] = useState<{ x: number; y: number; pos: number } | null>(null);
 
   const [registerParams, setRegisterParams] = useState<RegisterShape>({
     shape: "square",
@@ -468,10 +477,7 @@ export default function WorkPage() {
   }, [assayYaml]);
 
   useEffect(() => {
-    const tab = searchParams.get("tab");
-    if (tab === "dashboard" || tab === "register") {
-      setActiveTab(tab);
-    }
+    setActiveTab(parseWorkTab(searchParams.get("tab")));
   }, [searchParams]);
 
   useEffect(() => {
@@ -661,8 +667,16 @@ export default function WorkPage() {
   const currentPosIndex = allPositions.indexOf(selectedPos);
   const canMovePrev = currentPosIndex > 0;
   const canMoveNext = currentPosIndex >= 0 && currentPosIndex < allPositions.length - 1;
-  const registeredPosSet = useMemo(
-    () => new Set((scan?.registeredPositions ?? []).filter((value) => Number.isFinite(value))),
+  const registrationPosSet = useMemo(
+    () => new Set((scan?.registrationPositions ?? []).filter((value) => Number.isFinite(value))),
+    [scan],
+  );
+  const roiPosSet = useMemo(
+    () => new Set((scan?.roiPositions ?? []).filter((value) => Number.isFinite(value))),
+    [scan],
+  );
+  const predictionPosSet = useMemo(
+    () => new Set((scan?.predictionPositions ?? []).filter((value) => Number.isFinite(value))),
     [scan],
   );
 
@@ -920,6 +934,176 @@ export default function WorkPage() {
     await refreshScan();
   }, [assay, gridShape, image, modelImageSize, overlayOpacity, refreshScan, registerParams, selectedPos]);
 
+  const launchCropTask = useCallback(async (pos: number) => {
+    if (!assay) return;
+    if (!registrationPosSet.has(pos)) {
+      setError(`Position ${pos} has no registration.`);
+      return;
+    }
+
+    const taskId = crypto.randomUUID();
+    const timestamp = new Date().toISOString();
+    const task: TaskRecord = {
+      id: taskId,
+      kind: "file.crop",
+      status: "running",
+      created_at: timestamp,
+      started_at: timestamp,
+      finished_at: null,
+      request: {
+        folder: assay.folder,
+        pos,
+        background: false,
+      },
+      result: null,
+      error: null,
+      logs: [],
+      progress_events: [{
+        progress: 0,
+        message: "Running crop",
+        timestamp,
+      }],
+    };
+
+    setDashboardContextMenu(null);
+    try {
+      await api.tasks.insert(task);
+      setTasks((prev) => [task, ...prev.filter((item) => item.id !== task.id)]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      return;
+    }
+
+    try {
+      const result = await api.tasks.runCrop({
+        taskId,
+        folder: assay.folder,
+        pos,
+        background: false,
+      });
+      const finishedAt = new Date().toISOString();
+      setTasks((prev) =>
+        prev.map((item) =>
+          item.id === taskId
+            ? {
+                ...item,
+                status: result.ok ? "succeeded" : "failed",
+                finished_at: finishedAt,
+                error: result.ok ? null : result.error,
+                result: result.ok ? { output: result.output } : null,
+                progress_events: [
+                  ...item.progress_events,
+                  {
+                    progress: result.ok ? 1 : 0,
+                    message: result.ok ? "Crop completed" : `Crop failed: ${result.error}`,
+                    timestamp: finishedAt,
+                  },
+                ],
+              }
+            : item,
+        ),
+      );
+      if (!result.ok) {
+        setError(result.error);
+      } else {
+        setError(null);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      await refreshScan();
+      void refreshTasks();
+    }
+  }, [assay, refreshScan, refreshTasks, registrationPosSet]);
+
+  const runKillingInference = useCallback(async (pos: number) => {
+    if (!assay) return;
+    if (!roiPosSet.has(pos)) {
+      setError(`Position ${pos} has no ROI zarr.`);
+      return;
+    }
+
+    const taskId = crypto.randomUUID();
+    const timestamp = new Date().toISOString();
+    const task: TaskRecord = {
+      id: taskId,
+      kind: "killing.predict",
+      status: "running",
+      created_at: timestamp,
+      started_at: timestamp,
+      finished_at: null,
+      request: {
+        folder: assay.folder,
+        pos,
+        model: "~/.lisca/models/resnet18/model.onnx",
+      },
+      result: null,
+      error: null,
+      logs: [],
+      progress_events: [{
+        progress: 0,
+        message: "Running killing inference",
+        timestamp,
+      }],
+    };
+
+    setDashboardContextMenu(null);
+    try {
+      await api.tasks.insert(task);
+      setTasks((prev) => [task, ...prev.filter((item) => item.id !== task.id)]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      return;
+    }
+
+    try {
+      const result = await api.tasks.runKillingPredict({
+        taskId,
+        folder: assay.folder,
+        pos,
+      });
+      const finishedAt = new Date().toISOString();
+      setTasks((prev) =>
+        prev.map((item) =>
+          item.id === taskId
+            ? {
+                ...item,
+                status: result.ok ? "succeeded" : "failed",
+                finished_at: finishedAt,
+                error: result.ok ? null : result.error,
+                result: result.ok
+                  ? {
+                      output: result.output,
+                      rows: result.rows,
+                    }
+                  : null,
+                progress_events: [
+                  ...item.progress_events,
+                  {
+                    progress: result.ok ? 1 : 0,
+                    message: result.ok
+                      ? "Killing inference completed"
+                      : `Killing inference failed: ${result.error}`,
+                    timestamp: finishedAt,
+                  },
+                ],
+              }
+            : item,
+        ),
+      );
+      if (!result.ok) {
+        setError(result.error);
+      } else {
+        setError(null);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      await refreshScan();
+      void refreshTasks();
+    }
+  }, [assay, refreshScan, refreshTasks, roiPosSet]);
+
   useEffect(() => {
     if (!showTaskModal) return;
     void refreshTasks();
@@ -947,6 +1131,26 @@ export default function WorkPage() {
     };
   }, [refreshTasks, showTaskModal]);
 
+  useEffect(() => {
+    if (!dashboardContextMenu) return;
+
+    const handleClick = (event: MouseEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest("[data-dashboard-context-menu]")) return;
+      setDashboardContextMenu(null);
+    };
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setDashboardContextMenu(null);
+    };
+
+    window.addEventListener("click", handleClick);
+    window.addEventListener("keydown", handleEscape);
+    return () => {
+      window.removeEventListener("click", handleClick);
+      window.removeEventListener("keydown", handleEscape);
+    };
+  }, [dashboardContextMenu]);
+
   const hasCompletedTasks = tasks.some((task) => task.status === "succeeded" || task.status === "failed");
 
   if (loading) {
@@ -969,10 +1173,10 @@ export default function WorkPage() {
               <TabsTrigger value="register">
                 register
               </TabsTrigger>
-              <TabsTrigger value="view" disabled>
+              <TabsTrigger value="view">
                 view
               </TabsTrigger>
-            <TabsTrigger value="analyze" disabled>
+              <TabsTrigger value="analyze">
                 analyze
               </TabsTrigger>
             </TabsList>
@@ -1055,7 +1259,7 @@ export default function WorkPage() {
       <div className="flex min-h-0 flex-1">
         {showSidebars && (
           <aside className="w-72 flex-shrink-0 overflow-y-auto border-r border-border bg-background/80 p-4 backdrop-blur-sm">
-            {activeTab !== "dashboard" && (
+            {(activeTab === "register" || activeTab === "view") && (
               <div className="space-y-4">
                 <div>
                   <h2 className="text-sm font-medium uppercase tracking-wider text-muted-foreground">image</h2>
@@ -1118,10 +1322,12 @@ export default function WorkPage() {
               </div>
               <div className="flex flex-1 overflow-auto rounded-md border border-border bg-background">
                 <div className="w-full">
-                  <div className="grid h-10 grid-cols-3 items-center border-b bg-muted/40 px-4 text-sm font-medium">
+                  <div className="grid h-10 grid-cols-5 items-center border-b bg-muted/40 px-4 text-sm font-medium">
                     <span>position</span>
                     <span>sample</span>
-                    <span>registered</span>
+                    <span>registration</span>
+                    <span>roi</span>
+                    <span>prediction</span>
                   </div>
                   {(dashboardPositions ?? []).length === 0 ? (
                     <div className="px-4 py-6 text-sm text-muted-foreground">No positions found.</div>
@@ -1135,10 +1341,14 @@ export default function WorkPage() {
                           key={pos}
                           type="button"
                           className={cn(
-                            "grid w-full grid-cols-3 items-center border-b px-4 py-2.5 text-left text-sm transition-colors last:border-b-0 hover:bg-muted/70",
-                            selected &&
-                              "bg-muted/70",
+                            "grid w-full grid-cols-5 items-center border-b px-4 py-2.5 text-left text-sm transition-colors last:border-b-0 hover:bg-muted/70",
+                            selected && "bg-muted/70",
                           )}
+                          onContextMenu={(event) => {
+                            event.preventDefault();
+                            setSelectedPos(pos);
+                            setDashboardContextMenu({ x: event.clientX, y: event.clientY, pos });
+                          }}
                           onClick={() => {
                             setSelectedPos(pos);
                             if (assayYaml?.samples?.length) {
@@ -1165,7 +1375,21 @@ export default function WorkPage() {
                             )}
                           </span>
                           <span className="text-xs">
-                            {registeredPosSet.has(pos) ? (
+                            {registrationPosSet.has(pos) ? (
+                              <Check className="size-4 text-foreground" />
+                            ) : (
+                              <X className="size-4 text-muted-foreground" />
+                            )}
+                          </span>
+                          <span className="text-xs">
+                            {roiPosSet.has(pos) ? (
+                              <Check className="size-4 text-foreground" />
+                            ) : (
+                              <X className="size-4 text-muted-foreground" />
+                            )}
+                          </span>
+                          <span className="text-xs">
+                            {predictionPosSet.has(pos) ? (
                               <Check className="size-4 text-foreground" />
                             ) : (
                               <X className="size-4 text-muted-foreground" />
@@ -1177,6 +1401,34 @@ export default function WorkPage() {
                   )}
                 </div>
               </div>
+              {dashboardContextMenu &&
+                createPortal(
+                  <div
+                    data-dashboard-context-menu
+                    className="fixed z-[9999] min-w-[220px] rounded-md border border-border bg-background py-1 shadow-lg"
+                    style={{ left: dashboardContextMenu.x, top: dashboardContextMenu.y }}
+                  >
+                    <button
+                      type="button"
+                      className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-muted/70 disabled:cursor-not-allowed disabled:opacity-60"
+                      disabled={!registrationPosSet.has(dashboardContextMenu.pos)}
+                      onClick={() => void launchCropTask(dashboardContextMenu.pos)}
+                    >
+                      <Crop className="size-4" />
+                      launch crop task
+                    </button>
+                    <button
+                      type="button"
+                      className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-muted/70 disabled:cursor-not-allowed disabled:opacity-60"
+                      disabled={!roiPosSet.has(dashboardContextMenu.pos)}
+                      onClick={() => void runKillingInference(dashboardContextMenu.pos)}
+                    >
+                      <Sparkles className="size-4" />
+                      run killing inference
+                    </button>
+                  </div>,
+                  document.body,
+                )}
             </>
           ) : (
             <>
@@ -1206,75 +1458,98 @@ export default function WorkPage() {
                 </div>
               </div>
 
-              <div className="flex flex-1 items-center justify-center overflow-auto">
-                <div className="flex aspect-square h-full w-auto max-h-full max-w-full items-center justify-center rounded-lg border border-border bg-muted/30 p-3">
-                  <canvas
-                    ref={canvasRef}
-                    className="max-h-full max-w-full cursor-move object-contain"
-                    onPointerDown={handleCanvasPointerDown}
-                    onPointerMove={handleCanvasPointerMove}
-                    onPointerUp={handleCanvasPointerUp}
-                    onPointerCancel={handleCanvasPointerCancel}
-                    onWheel={handleCanvasWheel}
-                    onContextMenu={(event) => event.preventDefault()}
-                  />
-                </div>
-              </div>
+              {activeTab === "register" ? (
+                <>
+                  <div className="flex flex-1 items-center justify-center overflow-auto">
+                    <div className="flex aspect-square h-full w-auto max-h-full max-w-full items-center justify-center rounded-lg border border-border bg-muted/30 p-3">
+                      <canvas
+                        ref={canvasRef}
+                        className="max-h-full max-w-full cursor-move object-contain"
+                        onPointerDown={handleCanvasPointerDown}
+                        onPointerMove={handleCanvasPointerMove}
+                        onPointerUp={handleCanvasPointerUp}
+                        onPointerCancel={handleCanvasPointerCancel}
+                        onWheel={handleCanvasWheel}
+                        onContextMenu={(event) => event.preventDefault()}
+                      />
+                    </div>
+                  </div>
 
-              <div className="flex justify-center pt-3">
-                <div className="flex flex-wrap items-center justify-center gap-1.5 rounded-xl border border-border bg-background/80 px-2 py-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="h-7 text-sm"
-                    disabled={!image || autoDetectingGrid !== null}
-                    onClick={() => void handleAutoDetect("square")}
-                  >
-                    {autoDetectingGrid === "square" ? "auto square..." : "auto square"}
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="h-7 text-sm"
-                    disabled={!image || autoDetectingGrid !== null}
-                    onClick={() => void handleAutoDetect("hex")}
-                  >
-                    {autoDetectingGrid === "hex" ? "auto hex..." : "auto hex"}
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="h-7 text-sm"
-                    onClick={() => {
-                      setRegisterParams((prev) => ({
-                        ...prev,
-                        shape: gridShape,
-                        a: 75,
-                        alpha: 0,
-                        b: 75,
-                        beta: gridShape === "hex" ? 60 : 90,
-                        w: 50,
-                        h: 50,
-                        dx: 0,
-                        dy: 0,
-                      }));
-                      setOverlayOpacity(0.35);
-                    }}
-                  >
-                    reset
-                  </Button>
-                  <Button variant="outline" size="sm" className="h-7 text-sm" onClick={() => void handleSave()}>
-                    save
-                  </Button>
-                </div>
-              </div>
+                  <div className="flex justify-center pt-3">
+                    <div className="flex flex-wrap items-center justify-center gap-1.5 rounded-xl border border-border bg-background/80 px-2 py-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-7 text-sm"
+                        disabled={!image || autoDetectingGrid !== null}
+                        onClick={() => void handleAutoDetect("square")}
+                      >
+                        {autoDetectingGrid === "square" ? "auto square..." : "auto square"}
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-7 text-sm"
+                        disabled={!image || autoDetectingGrid !== null}
+                        onClick={() => void handleAutoDetect("hex")}
+                      >
+                        {autoDetectingGrid === "hex" ? "auto hex..." : "auto hex"}
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-7 text-sm"
+                        onClick={() => {
+                          setRegisterParams((prev) => ({
+                            ...prev,
+                            shape: gridShape,
+                            a: 75,
+                            alpha: 0,
+                            b: 75,
+                            beta: gridShape === "hex" ? 60 : 90,
+                            w: 50,
+                            h: 50,
+                            dx: 0,
+                            dy: 0,
+                          }));
+                          setOverlayOpacity(0.35);
+                        }}
+                      >
+                        reset
+                      </Button>
+                      <Button variant="outline" size="sm" className="h-7 text-sm" onClick={() => void handleSave()}>
+                        save
+                      </Button>
+                    </div>
+                  </div>
+                </>
+              ) : activeTab === "view" ? (
+                <ViewTab
+                  folder={assay?.folder ?? ""}
+                  pos={selectedPos}
+                  times={scan?.times ?? []}
+                  selectedTime={selectedTime}
+                  onSelectTime={setSelectedTime}
+                  channels={scan?.channels ?? []}
+                  selectedChannel={selectedChannel}
+                  zSlices={scan?.zSlices ?? []}
+                  selectedZ={selectedZ}
+                />
+              ) : (
+                <AnalyzeTab
+                  folder={assay?.folder ?? ""}
+                  pos={selectedPos}
+                  tasks={tasks}
+                  hasPrediction={predictionPosSet.has(selectedPos)}
+                />
+              )}
             </>
           )}
         </section>
 
         {showSidebars && (
           <aside className="w-72 flex-shrink-0 overflow-y-auto border-l border-border bg-background/80 p-4 backdrop-blur-sm">
-            {activeTab !== "dashboard" && (
+            {activeTab === "register" && (
               <div className="space-y-4">
                 <div className="space-y-2">
                   <h2 className="text-sm font-medium uppercase tracking-wider text-muted-foreground">grid</h2>

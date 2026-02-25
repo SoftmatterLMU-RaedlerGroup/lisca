@@ -1,5 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain } from "electron";
 import { execFile } from "node:child_process";
+import os from "node:os";
 import path from "node:path";
 import { constants } from "node:fs";
 import {
@@ -8,11 +9,16 @@ import {
   mkdir,
   readFile,
   readdir,
+  rename,
+  rm,
   unlink,
   writeFile,
 } from "node:fs/promises";
 import initSqlJs, { type Database } from "sql.js";
 import * as UTIF from "utif2";
+import type { Array as ZarritaArray, DataType, Location } from "zarrita";
+import type { Readable } from "@zarrita/storage";
+import type FileSystemStore from "@zarrita/storage/fs";
 import {
   computeAssayYamlHealth,
   TIFF_RE,
@@ -168,6 +174,130 @@ interface RunRegisterAutoDetectRequest extends AutoRegisterRequest {
   taskId: string;
 }
 
+interface DiscoverRoiRequest {
+  folder: string;
+  pos: number;
+}
+
+interface DiscoverRoiResponse {
+  crops: Array<{ cropId: string; shape: number[] }>;
+}
+
+interface LoadRoiFrameRequest {
+  folder: string;
+  pos: number;
+  cropId: string;
+  t: number;
+  c: number;
+  z: number;
+}
+
+interface LoadRoiFrameSuccess {
+  ok: true;
+  width: number;
+  height: number;
+  data: ArrayBuffer;
+}
+
+interface LoadRoiFrameFailure {
+  ok: false;
+  error: string;
+}
+
+type LoadRoiFrameResponse = LoadRoiFrameSuccess | LoadRoiFrameFailure;
+
+interface RunCropTaskRequest {
+  taskId: string;
+  folder: string;
+  pos: number;
+  background: boolean;
+}
+
+interface RunCropTaskSuccess {
+  ok: true;
+  output: string;
+}
+
+interface RunCropTaskFailure {
+  ok: false;
+  error: string;
+  code?: "binary_not_found" | "exec_error";
+}
+
+type RunCropTaskResponse = RunCropTaskSuccess | RunCropTaskFailure;
+
+interface RunKillingPredictRequest {
+  taskId: string;
+  folder: string;
+  pos: number;
+  batchSize?: number;
+  cpu?: boolean;
+}
+
+interface KillPredictionRow {
+  t: number;
+  crop: string;
+  label: boolean;
+}
+
+interface RunKillingPredictSuccess {
+  ok: true;
+  output: string;
+  rows: KillPredictionRow[];
+}
+
+interface RunKillingPredictFailure {
+  ok: false;
+  error: string;
+  code?: "binary_not_found" | "exec_error";
+}
+
+type RunKillingPredictResponse = RunKillingPredictSuccess | RunKillingPredictFailure;
+
+interface DownloadAssetsSuccess {
+  ok: true;
+  modelDir: string;
+  ffmpegPath: string;
+  downloadedFiles: string[];
+}
+
+interface DownloadAssetsFailure {
+  ok: false;
+  error: string;
+}
+
+type DownloadAssetsResponse = DownloadAssetsSuccess | DownloadAssetsFailure;
+
+type DownloadAssetsProgressPhase =
+  | "start"
+  | "model"
+  | "ffmpeg"
+  | "extract"
+  | "finalize"
+  | "done"
+  | "error";
+
+interface DownloadAssetsProgress {
+  phase: DownloadAssetsProgressPhase;
+  progress: number;
+  message: string;
+}
+
+interface AssetStatusSuccess {
+  ok: true;
+  modelPath: string;
+  ffmpegPath: string;
+  missing: string[];
+  allPresent: boolean;
+}
+
+interface AssetStatusFailure {
+  ok: false;
+  error: string;
+}
+
+type AssetStatusResponse = AssetStatusSuccess | AssetStatusFailure;
+
 let dbRef: Database | null = null;
 const TIFF_INDEX_CACHE_TTL_MS = 2500;
 
@@ -192,6 +322,38 @@ interface TiffCacheEntry {
 
 const tiffCache = new Map<string, TiffCacheEntry>();
 
+type ZarrArrayHandle = ZarritaArray<DataType, Readable>;
+type ZarrChunk = Awaited<ReturnType<ZarrArrayHandle["getChunk"]>>;
+type ZarrLocation = Location<Readable>;
+
+interface RoiZarrContext {
+  root: ZarrLocation;
+  arrays: Map<string, Promise<ZarrArrayHandle>>;
+}
+
+let zarrModulePromise: Promise<typeof import("zarrita")> | null = null;
+let fsStoreCtorPromise: Promise<typeof FileSystemStore> | null = null;
+const roiZarrContextByStorePath = new Map<string, RoiZarrContext>();
+
+const MODEL_DOWNLOADS = [
+  {
+    name: "model.onnx",
+    url: "https://huggingface.co/keejkrej/resnet18/resolve/main/model.onnx",
+  },
+  {
+    name: "config.json",
+    url: "https://huggingface.co/keejkrej/resnet18/resolve/main/config.json",
+  },
+  {
+    name: "preprocessor_config.json",
+    url: "https://huggingface.co/keejkrej/resnet18/resolve/main/preprocessor_config.json",
+  },
+] as const;
+
+const FFMPEG_ZIP_URL =
+  "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip";
+const SETTINGS_DOWNLOAD_PROGRESS_CHANNEL = "settings:download-assets-progress";
+
 function getDbPath(): string {
   return path.join(app.getPath("userData"), DB_FILENAME);
 }
@@ -200,6 +362,490 @@ function toArrayBuffer(view: Uint8Array): ArrayBuffer {
   const copy = new Uint8Array(view.byteLength);
   copy.set(view);
   return copy.buffer;
+}
+
+function roiStorePath(folder: string, pos: number): string {
+  return path.join(folder, `Pos${pos}_roi.zarr`);
+}
+
+function bboxCsvPath(folder: string, pos: number): string {
+  return path.join(folder, `Pos${pos}_bbox.csv`);
+}
+
+function killPredictionCsvPath(folder: string, pos: number): string {
+  return path.join(folder, `Pos${pos}_prediction.csv`);
+}
+
+function defaultKillModelDir(): string {
+  return path.join(os.homedir(), ".lisca", "models", "resnet18");
+}
+
+function defaultLiscaBinDir(): string {
+  return path.join(os.homedir(), ".lisca", "bin");
+}
+
+function defaultKillModelPath(): string {
+  return path.join(defaultKillModelDir(), "model.onnx");
+}
+
+function defaultFfmpegPath(): string {
+  return path.join(defaultLiscaBinDir(), "ffmpeg.exe");
+}
+
+async function isReadable(filePath: string): Promise<boolean> {
+  try {
+    await access(filePath, constants.R_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+interface DownloadFileOptions {
+  onProgress?: (downloadedBytes: number, totalBytes: number | null) => void;
+}
+
+function clampProgress(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(1, value));
+}
+
+function emitDownloadAssetsProgress(
+  onProgress: ((event: DownloadAssetsProgress) => void) | undefined,
+  event: DownloadAssetsProgress,
+): void {
+  if (!onProgress) return;
+  onProgress({
+    ...event,
+    progress: clampProgress(event.progress),
+  });
+}
+
+async function downloadFile(url: string, outputPath: string, options?: DownloadFileOptions): Promise<void> {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`Failed to download ${url}: HTTP ${response.status}`);
+  }
+
+  const tempPath = `${outputPath}.tmp-${Date.now()}`;
+  await mkdir(path.dirname(outputPath), { recursive: true });
+
+  const contentLengthHeader = response.headers.get("content-length");
+  const parsedLength = contentLengthHeader ? Number.parseInt(contentLengthHeader, 10) : NaN;
+  const totalBytes = Number.isFinite(parsedLength) && parsedLength > 0 ? parsedLength : null;
+
+  if (!response.body) {
+    const bytes = Buffer.from(await response.arrayBuffer());
+    options?.onProgress?.(bytes.byteLength, totalBytes ?? bytes.byteLength);
+    await writeFile(tempPath, bytes);
+    await rename(tempPath, outputPath);
+    return;
+  }
+
+  const reader = response.body.getReader();
+  const chunks: Buffer[] = [];
+  let downloadedBytes = 0;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+
+    const chunk = Buffer.from(value.buffer, value.byteOffset, value.byteLength);
+    chunks.push(chunk);
+    downloadedBytes += chunk.byteLength;
+    options?.onProgress?.(downloadedBytes, totalBytes);
+  }
+
+  const bytes = Buffer.concat(chunks);
+  options?.onProgress?.(bytes.byteLength, totalBytes ?? bytes.byteLength);
+  await writeFile(tempPath, bytes);
+  await rename(tempPath, outputPath);
+}
+
+async function extractZipOnWindows(zipPath: string, destination: string): Promise<void> {
+  await mkdir(destination, { recursive: true });
+  const runProcess = async (binary: string, args: string[]): Promise<string> => {
+    return new Promise<string>((resolve, reject) => {
+      execFile(
+        binary,
+        args,
+        { windowsHide: true, maxBuffer: 32 * 1024 * 1024 },
+        (error, stdout, stderr) => {
+          if (error) {
+            reject(new Error((stderr || stdout || error.message).toString().trim()));
+            return;
+          }
+          resolve(String(stdout ?? "").trim());
+        },
+      );
+    });
+  };
+
+  const errors: string[] = [];
+
+  // Strategy 1: bsdtar on modern Windows images.
+  try {
+    await runProcess("tar.exe", ["-xf", zipPath, "-C", destination]);
+    return;
+  } catch (error) {
+    errors.push(`tar.exe failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  // Strategy 2: .NET ZipFile API (does not depend on PowerShell Archive module autoload).
+  try {
+    const escapedZipPath = zipPath.replace(/'/g, "''");
+    const escapedDestination = destination.replace(/'/g, "''");
+    const script =
+      `$ErrorActionPreference='Stop'; ` +
+      `Add-Type -AssemblyName System.IO.Compression.FileSystem; ` +
+      `[System.IO.Compression.ZipFile]::ExtractToDirectory('${escapedZipPath}','${escapedDestination}',$true)`;
+    await runProcess("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script]);
+    return;
+  } catch (error) {
+    errors.push(`ZipFile extract failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  throw new Error(`Failed to extract ffmpeg archive. ${errors.join(" | ")}`);
+}
+
+async function findFirstFileRecursive(
+  root: string,
+  filename: string,
+  maxDepth = 8,
+  depth = 0,
+): Promise<string | null> {
+  const entries = await readdir(root, { withFileTypes: true });
+  for (const entry of entries) {
+    const fullPath = path.join(root, entry.name);
+    if (entry.isFile() && entry.name.toLowerCase() === filename.toLowerCase()) {
+      return fullPath;
+    }
+  }
+  if (depth >= maxDepth) return null;
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const nestedPath = path.join(root, entry.name);
+    try {
+      const found = await findFirstFileRecursive(nestedPath, filename, maxDepth, depth + 1);
+      if (found) return found;
+    } catch {
+      // Ignore unreadable nested folders.
+    }
+  }
+  return null;
+}
+
+async function downloadDefaultAssets(
+  onProgress?: (event: DownloadAssetsProgress) => void,
+): Promise<DownloadAssetsResponse> {
+  let lastProgress = 0;
+  const reportProgress = (event: DownloadAssetsProgress): void => {
+    lastProgress = clampProgress(event.progress);
+    emitDownloadAssetsProgress(onProgress, event);
+  };
+
+  const reportRangedDownload = (
+    phase: DownloadAssetsProgressPhase,
+    message: string,
+    start: number,
+    end: number,
+  ): ((downloadedBytes: number, totalBytes: number | null) => void) => {
+    let lastBucket = -1;
+    return (downloadedBytes: number, totalBytes: number | null) => {
+      const rawProgress =
+        totalBytes && totalBytes > 0 ? downloadedBytes / totalBytes : downloadedBytes > 0 ? 0.95 : 0;
+      const normalized = clampProgress(rawProgress);
+      const progress = start + (end - start) * normalized;
+      const bucket = Math.floor(progress * 100);
+      if (bucket === lastBucket && normalized < 1) return;
+      lastBucket = bucket;
+      reportProgress({
+        phase,
+        progress,
+        message,
+      });
+    };
+  };
+
+  try {
+    reportProgress({
+      phase: "start",
+      progress: 0,
+      message: "Starting asset download...",
+    });
+
+    const modelDir = defaultKillModelDir();
+    const binDir = defaultLiscaBinDir();
+    const downloadedFiles: string[] = [];
+    const modelRangeStart = 0.02;
+    const modelRangeEnd = 0.62;
+    const modelSpan = modelRangeEnd - modelRangeStart;
+    const modelStep = modelSpan / MODEL_DOWNLOADS.length;
+
+    for (const [index, item] of MODEL_DOWNLOADS.entries()) {
+      const outputPath = path.join(modelDir, item.name);
+      const stepStart = modelRangeStart + modelStep * index;
+      const stepEnd = stepStart + modelStep;
+      reportProgress({
+        phase: "model",
+        progress: stepStart,
+        message: `Checking ${item.name}...`,
+      });
+      if (await isReadable(outputPath)) {
+        reportProgress({
+          phase: "model",
+          progress: stepEnd,
+          message: `${item.name} already present, skipping.`,
+        });
+        continue;
+      }
+      reportProgress({
+        phase: "model",
+        progress: stepStart,
+        message: `Downloading ${item.name}...`,
+      });
+      await downloadFile(item.url, outputPath, {
+        onProgress: reportRangedDownload("model", `Downloading ${item.name}...`, stepStart, stepEnd),
+      });
+      reportProgress({
+        phase: "model",
+        progress: stepEnd,
+        message: `Downloaded ${item.name}.`,
+      });
+      downloadedFiles.push(outputPath);
+    }
+
+    const ffmpegPath = defaultFfmpegPath();
+    const ffmpegExists = await isReadable(ffmpegPath);
+
+    if (!ffmpegExists && process.platform !== "win32") {
+      reportProgress({
+        phase: "error",
+        progress: lastProgress,
+        message: "ffmpeg.exe download is only supported on Windows.",
+      });
+      return {
+        ok: false,
+        error: "ffmpeg.exe download is only supported on Windows.",
+      };
+    }
+
+    reportProgress({
+      phase: "ffmpeg",
+      progress: 0.62,
+      message: "Checking ffmpeg.exe...",
+    });
+    if (ffmpegExists) {
+      reportProgress({
+        phase: "finalize",
+        progress: 0.96,
+        message: "ffmpeg.exe already present, skipping.",
+      });
+    } else {
+      const tempRoot = path.join(os.tmpdir(), `lisca-ffmpeg-${Date.now()}`);
+      const zipPath = path.join(tempRoot, "ffmpeg.zip");
+      const extractRoot = path.join(tempRoot, "extract");
+
+      try {
+        await mkdir(tempRoot, { recursive: true });
+        reportProgress({
+          phase: "ffmpeg",
+          progress: 0.62,
+          message: "Downloading ffmpeg archive...",
+        });
+        await downloadFile(FFMPEG_ZIP_URL, zipPath, {
+          onProgress: reportRangedDownload("ffmpeg", "Downloading ffmpeg archive...", 0.62, 0.9),
+        });
+        reportProgress({
+          phase: "extract",
+          progress: 0.9,
+          message: "Extracting ffmpeg archive...",
+        });
+        await extractZipOnWindows(zipPath, extractRoot);
+        const discovered = await findFirstFileRecursive(extractRoot, "ffmpeg.exe");
+        if (!discovered) {
+          throw new Error("ffmpeg.exe not found in downloaded archive.");
+        }
+        reportProgress({
+          phase: "finalize",
+          progress: 0.96,
+          message: "Installing ffmpeg.exe...",
+        });
+        await mkdir(binDir, { recursive: true });
+        await copyFile(discovered, ffmpegPath);
+        downloadedFiles.push(ffmpegPath);
+      } finally {
+        await rm(tempRoot, { recursive: true, force: true });
+      }
+    }
+
+    reportProgress({
+      phase: "done",
+      progress: 1,
+      message:
+        downloadedFiles.length > 0 ? "Assets downloaded successfully." : "All required assets are already present.",
+    });
+
+    return {
+      ok: true,
+      modelDir,
+      ffmpegPath,
+      downloadedFiles,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    reportProgress({
+      phase: "error",
+      progress: lastProgress,
+      message: message || "Failed to download default assets.",
+    });
+    return {
+      ok: false,
+      error: message || "Failed to download default assets.",
+    };
+  }
+}
+
+async function getAssetStatus(): Promise<AssetStatusResponse> {
+  try {
+    const modelPath = defaultKillModelPath();
+    const ffmpegPath = defaultFfmpegPath();
+    const missing: string[] = [];
+
+    try {
+      await access(modelPath, constants.R_OK);
+    } catch {
+      missing.push(modelPath);
+    }
+    try {
+      await access(ffmpegPath, constants.R_OK);
+    } catch {
+      missing.push(ffmpegPath);
+    }
+
+    return {
+      ok: true,
+      modelPath,
+      ffmpegPath,
+      missing,
+      allPresent: missing.length === 0,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      ok: false,
+      error: message || "Failed to check asset status.",
+    };
+  }
+}
+
+async function getZarrDeps(): Promise<{
+  zarr: typeof import("zarrita");
+  FileSystemStore: typeof FileSystemStore;
+}> {
+  if (!zarrModulePromise) {
+    zarrModulePromise = import("zarrita");
+  }
+  if (!fsStoreCtorPromise) {
+    fsStoreCtorPromise = import("@zarrita/storage/fs").then((module) => module.default);
+  }
+  return {
+    zarr: await zarrModulePromise,
+    FileSystemStore: await fsStoreCtorPromise,
+  };
+}
+
+async function getRoiZarrContext(storePath: string): Promise<RoiZarrContext> {
+  const existing = roiZarrContextByStorePath.get(storePath);
+  if (existing) return existing;
+
+  const { zarr, FileSystemStore } = await getZarrDeps();
+  const store = new FileSystemStore(storePath);
+  const root: ZarrLocation = zarr.root(store);
+  const context: RoiZarrContext = { root, arrays: new Map() };
+  roiZarrContextByStorePath.set(storePath, context);
+  return context;
+}
+
+async function getCachedRoiArray(storePath: string, cropId: string): Promise<ZarrArrayHandle> {
+  const context = await getRoiZarrContext(storePath);
+  const existing = context.arrays.get(cropId);
+  if (existing) return existing;
+
+  const { zarr } = await getZarrDeps();
+  const created = zarr.open.v3(context.root.resolve(`roi/${cropId}/raw`), { kind: "array" });
+  created.catch(() => {
+    const current = context.arrays.get(cropId);
+    if (current === created) context.arrays.delete(cropId);
+  });
+  context.arrays.set(cropId, created);
+  return created;
+}
+
+async function discoverRoiCrops(payload: DiscoverRoiRequest): Promise<DiscoverRoiResponse> {
+  const out: DiscoverRoiResponse = { crops: [] };
+  const storePath = roiStorePath(payload.folder, payload.pos);
+  const roiDir = path.join(storePath, "roi");
+
+  let cropIds: string[] = [];
+  try {
+    const entries = await readdir(roiDir, { withFileTypes: true });
+    cropIds = entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+    cropIds.sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  } catch {
+    return out;
+  }
+
+  for (const cropId of cropIds) {
+    try {
+      const arr = await getCachedRoiArray(storePath, cropId);
+      out.crops.push({ cropId, shape: [...arr.shape] });
+    } catch {
+      // Skip unreadable crops.
+    }
+  }
+
+  return out;
+}
+
+async function loadRoiFrame(payload: LoadRoiFrameRequest): Promise<LoadRoiFrameResponse> {
+  const storePath = roiStorePath(payload.folder, payload.pos);
+  const key = payload.cropId;
+  try {
+    const context = await getRoiZarrContext(storePath);
+    let arr = await getCachedRoiArray(storePath, payload.cropId);
+    let chunk: ZarrChunk;
+    try {
+      chunk = await arr.getChunk([payload.t, payload.c, payload.z, 0, 0]);
+    } catch {
+      context.arrays.delete(key);
+      arr = await getCachedRoiArray(storePath, payload.cropId);
+      chunk = await arr.getChunk([payload.t, payload.c, payload.z, 0, 0]);
+    }
+
+    const source = chunk.data;
+    const typed =
+      source instanceof Uint16Array ? source : Uint16Array.from(source as ArrayLike<number>);
+    const output = new Uint16Array(typed.length);
+    output.set(typed);
+    const height = chunk.shape[chunk.shape.length - 2];
+    const width = chunk.shape[chunk.shape.length - 1];
+
+    return {
+      ok: true,
+      width,
+      height,
+      data: toArrayBuffer(new Uint8Array(output.buffer)),
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      ok: false,
+      error: message || "Failed to load ROI frame.",
+    };
+  }
 }
 
 async function persistDb(db: Database): Promise<void> {
@@ -472,6 +1118,37 @@ async function deleteCompletedTasks(): Promise<number> {
   db.run("DELETE FROM tasks WHERE status IN ('succeeded', 'failed')");
   await persistDb(db);
   return Number.isFinite(count) ? count : 0;
+}
+
+async function parseKillPredictionCsv(csvPath: string): Promise<KillPredictionRow[]> {
+  try {
+    const content = await readFile(csvPath, "utf8");
+    const lines = content.trim().split("\n");
+    if (lines.length < 2) return [];
+    const header = lines[0].split(",").map((col) => col.trim().toLowerCase());
+    const tIndex = header.indexOf("t");
+    const cropIndex = header.indexOf("crop");
+    const labelIndex = header.indexOf("label");
+    if (tIndex < 0 || cropIndex < 0 || labelIndex < 0) return [];
+
+    const rows: KillPredictionRow[] = [];
+    for (let i = 1; i < lines.length; i += 1) {
+      const parts = lines[i].split(",");
+      if (parts.length <= Math.max(tIndex, cropIndex, labelIndex)) continue;
+      const t = Number.parseInt(parts[tIndex] ?? "", 10);
+      const crop = String(parts[cropIndex] ?? "").trim();
+      const labelValue = String(parts[labelIndex] ?? "").trim().toLowerCase();
+      if (!Number.isFinite(t) || crop.length === 0) continue;
+      rows.push({
+        t,
+        crop,
+        label: labelValue === "true" || labelValue === "1",
+      });
+    }
+    return rows;
+  } catch {
+    return [];
+  }
 }
 
 function normalizeRgbaInPlace(rgba: Uint8Array, width: number, height: number): void {
@@ -1036,6 +1713,185 @@ async function runAutoDetectTask(payload: RunRegisterAutoDetectRequest): Promise
   return result;
 }
 
+function decodeExecFailure(error: unknown, fallbackMessage: string): {
+  code: "binary_not_found" | "exec_error";
+  error: string;
+} {
+  const failure = error as ExecFileErrorPayload;
+  if (failure?.error?.code === "ENOENT") {
+    return {
+      code: "binary_not_found",
+      error: fallbackMessage,
+    };
+  }
+  const stderr = typeof failure?.stderr === "string" ? failure.stderr.trim() : "";
+  const stdout = typeof failure?.stdout === "string" ? failure.stdout.trim() : "";
+  const fallback = failure?.error instanceof Error ? failure.error.message : fallbackMessage;
+  return {
+    code: "exec_error",
+    error: stderr || stdout || fallback,
+  };
+}
+
+async function runCropTask(payload: RunCropTaskRequest): Promise<RunCropTaskResponse> {
+  const startedAt = new Date().toISOString();
+  const progressEvents: TaskProgressEvent[] = [{
+    progress: 0,
+    message: "Running crop",
+    timestamp: startedAt,
+  }];
+  await updateTask(payload.taskId, {
+    status: "running",
+    started_at: startedAt,
+    finished_at: null,
+    error: null,
+    result: null,
+    progress_events: progressEvents,
+  });
+
+  const bboxPath = bboxCsvPath(payload.folder, payload.pos);
+  const output = payload.folder;
+  const args = [
+    "crop",
+    "--input",
+    payload.folder,
+    "--pos",
+    String(payload.pos),
+    "--bbox",
+    bboxPath,
+    "--output",
+    output,
+    ...(payload.background ? ["--background"] : []),
+  ];
+
+  let result: RunCropTaskResponse;
+  try {
+    const binary = candidateLiscaRsBinaries()[0];
+    await execCommand(binary, args);
+    result = { ok: true, output };
+  } catch (error) {
+    const decoded = decodeExecFailure(error, "Failed to run lisca-rs crop.");
+    result = { ok: false, code: decoded.code, error: decoded.error };
+  }
+
+  const finishedAt = new Date().toISOString();
+  progressEvents.push({
+    progress: result.ok ? 1 : 0,
+    message: result.ok ? "Crop completed" : `Crop failed: ${result.error}`,
+    timestamp: finishedAt,
+  });
+  await updateTask(payload.taskId, {
+    status: result.ok ? "succeeded" : "failed",
+    finished_at: finishedAt,
+    error: result.ok ? null : result.error,
+    result: result.ok ? { output: result.output } : null,
+    progress_events: progressEvents,
+  });
+
+  return result;
+}
+
+async function runKillingPredictTask(payload: RunKillingPredictRequest): Promise<RunKillingPredictResponse> {
+  const startedAt = new Date().toISOString();
+  const progressEvents: TaskProgressEvent[] = [{
+    progress: 0,
+    message: "Running killing inference",
+    timestamp: startedAt,
+  }];
+  await updateTask(payload.taskId, {
+    status: "running",
+    started_at: startedAt,
+    finished_at: null,
+    error: null,
+    result: null,
+    progress_events: progressEvents,
+  });
+
+  const output = killPredictionCsvPath(payload.folder, payload.pos);
+  const modelDir = defaultKillModelDir();
+  const modelPath = path.join(modelDir, "model.onnx");
+  try {
+    await access(modelPath, constants.R_OK);
+  } catch {
+    const finishedAt = new Date().toISOString();
+    const error = `Model not found at ${modelPath}`;
+    progressEvents.push({
+      progress: 0,
+      message: `Killing inference failed: ${error}`,
+      timestamp: finishedAt,
+    });
+    await updateTask(payload.taskId, {
+      status: "failed",
+      finished_at: finishedAt,
+      error,
+      result: null,
+      progress_events: progressEvents,
+    });
+    return { ok: false, code: "exec_error", error };
+  }
+
+  const args = [
+    "killing",
+    "--workspace",
+    payload.folder,
+    "--pos",
+    String(payload.pos),
+    "--model",
+    modelDir,
+    "--output",
+    output,
+    "--batch-size",
+    String(payload.batchSize ?? 256),
+    ...(payload.cpu ? ["--cpu"] : []),
+  ];
+
+  let result: RunKillingPredictResponse;
+  try {
+    const binary = candidateLiscaRsBinaries()[0];
+    await execCommand(binary, args);
+    const rows = await parseKillPredictionCsv(output);
+    result = { ok: true, output, rows };
+  } catch (error) {
+    const decoded = decodeExecFailure(error, "Failed to run lisca-rs killing.");
+    result = { ok: false, code: decoded.code, error: decoded.error };
+  }
+
+  const finishedAt = new Date().toISOString();
+  progressEvents.push({
+    progress: result.ok ? 1 : 0,
+    message: result.ok ? "Killing inference completed" : `Killing inference failed: ${result.error}`,
+    timestamp: finishedAt,
+  });
+  await updateTask(payload.taskId, {
+    status: result.ok ? "succeeded" : "failed",
+    finished_at: finishedAt,
+    error: result.ok ? null : result.error,
+    result: result.ok
+      ? {
+          output: result.output,
+          rows: result.rows,
+        }
+      : null,
+    progress_events: progressEvents,
+  });
+
+  return result;
+}
+
+async function loadPredictionCsv(
+  folder: string,
+  pos: number,
+): Promise<{ ok: true; rows: KillPredictionRow[] } | { ok: false; error: string }> {
+  try {
+    const csvPath = killPredictionCsvPath(folder, pos);
+    const rows = await parseKillPredictionCsv(csvPath);
+    return { ok: true, rows };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { ok: false, error: message || "Failed to load prediction CSV." };
+  }
+}
+
 function registerIpc(): void {
   ipcMain.handle("assays:list", async () => listAssays());
   ipcMain.handle("assays:remove", async (_event, id: string) => removeAssay(id));
@@ -1116,6 +1972,14 @@ function registerIpc(): void {
     autoDetectRegister(payload),
   );
 
+  ipcMain.handle("roi:discover", async (_event, payload: DiscoverRoiRequest): Promise<DiscoverRoiResponse> =>
+    discoverRoiCrops(payload),
+  );
+
+  ipcMain.handle("roi:load-frame", async (_event, payload: LoadRoiFrameRequest): Promise<LoadRoiFrameResponse> =>
+    loadRoiFrame(payload),
+  );
+
   ipcMain.handle("tasks:insert-task", async (_event, task: TaskRecord): Promise<boolean> => {
     await insertTask(task);
     return true;
@@ -1136,6 +2000,18 @@ function registerIpc(): void {
   );
 
   ipcMain.handle(
+    "tasks:run-crop",
+    async (_event, payload: RunCropTaskRequest): Promise<RunCropTaskResponse> =>
+      runCropTask(payload),
+  );
+
+  ipcMain.handle(
+    "tasks:run-killing-predict",
+    async (_event, payload: RunKillingPredictRequest): Promise<RunKillingPredictResponse> =>
+      runKillingPredictTask(payload),
+  );
+
+  ipcMain.handle(
     "register:save-bbox",
     async (
       _event,
@@ -1152,6 +2028,27 @@ function registerIpc(): void {
       return false;
     }
   });
+
+  ipcMain.handle(
+    "application:load-prediction-csv",
+    async (
+      _event,
+      payload: { folder: string; pos: number },
+    ): Promise<{ ok: true; rows: KillPredictionRow[] } | { ok: false; error: string }> =>
+      loadPredictionCsv(payload.folder, payload.pos),
+  );
+
+  ipcMain.handle(
+    "settings:download-assets",
+    async (event): Promise<DownloadAssetsResponse> =>
+      downloadDefaultAssets((progress) => {
+        event.sender.send(SETTINGS_DOWNLOAD_PROGRESS_CHANNEL, progress);
+      }),
+  );
+  ipcMain.handle(
+    "settings:asset-status",
+    async (): Promise<AssetStatusResponse> => getAssetStatus(),
+  );
 }
 
 function createWindow(): void {

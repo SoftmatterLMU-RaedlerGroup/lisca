@@ -25,7 +25,9 @@ export interface FolderScan {
   channels: number[];
   times: number[];
   zSlices: number[];
-  registeredPositions: number[];
+  registrationPositions: number[];
+  roiPositions: number[];
+  predictionPositions: number[];
 }
 
 export interface ReadImageSuccess {
@@ -110,6 +112,50 @@ export interface TaskRecord {
   error: string | null;
   logs: string[];
   progress_events: TaskProgressEvent[];
+}
+
+export interface CropInfo {
+  cropId: string;
+  shape: number[];
+}
+
+export interface DiscoverRoiResponse {
+  crops: CropInfo[];
+}
+
+export interface LoadRoiFrameSuccess {
+  ok: true;
+  width: number;
+  height: number;
+  data: ArrayBuffer;
+}
+
+export interface LoadRoiFrameFailure {
+  ok: false;
+  error: string;
+}
+
+export type LoadRoiFrameResponse = LoadRoiFrameSuccess | LoadRoiFrameFailure;
+
+export interface KillPredictionRow {
+  t: number;
+  crop: string;
+  label: boolean;
+}
+
+export type DownloadAssetsProgressPhase =
+  | "start"
+  | "model"
+  | "ffmpeg"
+  | "extract"
+  | "finalize"
+  | "done"
+  | "error";
+
+export interface DownloadAssetsProgress {
+  phase: DownloadAssetsProgressPhase;
+  progress: number;
+  message: string;
 }
 
 export interface AssaySample {

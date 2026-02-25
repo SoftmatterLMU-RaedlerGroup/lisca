@@ -6,6 +6,8 @@ import {
   Dialog,
   DialogContent,
   DialogFooter,
+  DialogHeader,
+  DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -47,6 +49,15 @@ export default function SetupPage() {
   const [channelInput, setChannelInput] = useState("");
   const [channelNameInput, setChannelNameInput] = useState("");
   const [editingChannelIndex, setEditingChannelIndex] = useState<number | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [downloadingAssets, setDownloadingAssets] = useState(false);
+  const [settingsMessage, setSettingsMessage] = useState<string | null>(null);
+  const [settingsError, setSettingsError] = useState<string | null>(null);
+  const [missingAssets, setMissingAssets] = useState<string[]>([]);
+  const [assetStatusError, setAssetStatusError] = useState<string | null>(null);
+  const [assetPaths, setAssetPaths] = useState<{ modelPath: string; ffmpegPath: string } | null>(null);
+  const [assetDownloadProgress, setAssetDownloadProgress] = useState(0);
+  const [assetDownloadMessage, setAssetDownloadMessage] = useState<string | null>(null);
 
   const loadAssays = useCallback(async () => {
     setLoading(true);
@@ -64,6 +75,40 @@ export default function SetupPage() {
   useEffect(() => {
     void loadAssays();
   }, [loadAssays]);
+
+  const refreshAssetStatus = useCallback(async () => {
+    try {
+      const status = await api.settings.getAssetStatus();
+      if (!status.ok) {
+        setAssetStatusError(status.error);
+        setMissingAssets([]);
+        setAssetPaths(null);
+        return;
+      }
+      setAssetStatusError(null);
+      setMissingAssets(status.missing);
+      setAssetPaths({
+        modelPath: status.modelPath,
+        ffmpegPath: status.ffmpegPath,
+      });
+    } catch (err) {
+      setAssetStatusError(err instanceof Error ? err.message : String(err));
+      setMissingAssets([]);
+      setAssetPaths(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshAssetStatus();
+  }, [refreshAssetStatus]);
+
+  useEffect(() => {
+    const unsubscribe = api.settings.onDownloadAssetsProgress((event) => {
+      setAssetDownloadProgress(Math.max(0, Math.min(1, event.progress)));
+      setAssetDownloadMessage(event.message);
+    });
+    return unsubscribe;
+  }, []);
 
   const canSave = useMemo(() => {
     return (
@@ -361,12 +406,65 @@ export default function SetupPage() {
     }
   }, [canSave, channelNames, date, editingAssayId, folder, loadAssays, name, navigate, samples, type]);
 
+  const handleDownloadAssets = useCallback(async () => {
+    setDownloadingAssets(true);
+    setSettingsError(null);
+    setSettingsMessage(null);
+    setAssetDownloadProgress(0);
+    setAssetDownloadMessage("Starting asset download...");
+    try {
+      const result = await api.settings.downloadAssets();
+      if (!result.ok) {
+        setSettingsError(result.error);
+        return;
+      }
+      setAssetDownloadProgress(1);
+      setAssetDownloadMessage(
+        result.downloadedFiles.length > 0
+          ? "Assets downloaded successfully."
+          : "All required assets are already present.",
+      );
+      setSettingsMessage(
+        result.downloadedFiles.length > 0
+          ? `Downloaded ${result.downloadedFiles.length} missing asset${result.downloadedFiles.length > 1 ? "s" : ""}.`
+          : "All required assets are already present.",
+      );
+      await refreshAssetStatus();
+    } catch (err) {
+      setSettingsError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDownloadingAssets(false);
+    }
+  }, [refreshAssetStatus]);
+
   return (
     <AppContainer className="max-w-4xl">
       <div className="space-y-5 rounded-lg border bg-background/90 p-6 shadow-sm backdrop-blur-sm">
         <div className="flex items-center justify-between gap-3">
           <h1 className="text-4xl tracking-tight">LISCA assays</h1>
           <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              variant={missingAssets.length > 0 ? "destructive" : "outline"}
+              className={cn("relative", missingAssets.length > 0 && "pr-6")}
+              onClick={() => {
+                setSettingsMessage(null);
+                setSettingsError(null);
+                setAssetDownloadProgress(0);
+                setAssetDownloadMessage(null);
+                setSettingsOpen(true);
+                void refreshAssetStatus();
+              }}
+              aria-label="settings"
+              title="settings"
+            >
+              settings
+              {missingAssets.length > 0 && (
+                <span className="absolute -right-1 -top-1 inline-flex size-4 items-center justify-center rounded-full border border-background bg-destructive text-[10px] font-semibold text-white">
+                  !
+                </span>
+              )}
+            </Button>
             <Button
               size="sm"
               variant="outline"
@@ -496,6 +594,73 @@ export default function SetupPage() {
 
         {error && <p className="text-sm text-destructive">{error}</p>}
       </div>
+
+      <Dialog
+        open={settingsOpen}
+        onOpenChange={(open) => {
+          setSettingsOpen(open);
+          if (!open) {
+            setDownloadingAssets(false);
+            setAssetDownloadProgress(0);
+            setAssetDownloadMessage(null);
+          }
+        }}
+      >
+        <DialogContent className="max-w-xl">
+          <DialogHeader>
+            <DialogTitle>settings</DialogTitle>
+          </DialogHeader>
+
+          {assetPaths && (
+            <div className="space-y-1 rounded-md border bg-background p-3 text-xs">
+              <p>model path: <code>{assetPaths.modelPath}</code></p>
+              <p>ffmpeg path: <code>{assetPaths.ffmpegPath}</code></p>
+            </div>
+          )}
+
+          {assetStatusError && <p className="text-sm text-destructive">{assetStatusError}</p>}
+          {missingAssets.length > 0 ? (
+            <div className="space-y-1 rounded-md border border-destructive/40 bg-background p-3 text-xs text-destructive">
+              {missingAssets.map((item) => (
+                <p key={item} className="break-all">
+                  missing path: <code>{item}</code>
+                </p>
+              ))}
+            </div>
+          ) : (
+            <p className="text-sm text-emerald-600">all required assets are present.</p>
+          )}
+
+          {(downloadingAssets || assetDownloadProgress > 0) && (
+            <div className="space-y-2 rounded-md border bg-muted/25 p-3">
+              <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+                <p className="truncate">{assetDownloadMessage ?? "downloading assets..."}</p>
+                <span>{Math.round(assetDownloadProgress * 100)}%</span>
+              </div>
+              <div className="h-2 overflow-hidden rounded-full bg-muted">
+                <div
+                  className="h-full bg-primary transition-[width] duration-200"
+                  style={{ width: `${Math.round(assetDownloadProgress * 100)}%` }}
+                />
+              </div>
+            </div>
+          )}
+
+          {settingsMessage && <p className="text-sm text-emerald-600">{settingsMessage}</p>}
+          {settingsError && <p className="text-sm text-destructive">{settingsError}</p>}
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setSettingsOpen(false)}>
+              close
+            </Button>
+            <Button disabled={downloadingAssets} onClick={() => void handleDownloadAssets()}>
+              {downloadingAssets
+                ? `downloading... ${Math.round(assetDownloadProgress * 100)}%`
+                : "download model + ffmpeg"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog
         open={addOpen}
