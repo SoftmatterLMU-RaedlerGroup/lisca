@@ -4,7 +4,7 @@ import subprocess
 
 def test_root_help() -> None:
     out = subprocess.run(["uv", "run", "lisca-py", "--help"], cwd=Path(__file__).resolve().parents[2], check=True, capture_output=True, text=True)
-    for command in ["convert", "crop", "movie", "expression", "killing", "tissue"]:
+    for command in ["convert", "crop", "register", "movie", "expression", "killing", "tissue"]:
         assert command in out.stdout
 
 
@@ -13,6 +13,7 @@ def test_subcommand_help() -> None:
     subcommands = {
         "convert": "--input",
         "crop": "--bbox",
+        "register": "--grid",
         "movie": "--fps",
         "expression": "--channel",
         "killing": "--model",

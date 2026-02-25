@@ -1,0 +1,11 @@
+# Rust build output
+lisca-rs/target/
+
+# Python cache and local env artifacts
+**/__pycache__/
+*.py[cod]
+lisca-py/.venv/
+lisca-py/.uv-cache/
+
+# Workspace-local uv cache
+.uv-cache/
