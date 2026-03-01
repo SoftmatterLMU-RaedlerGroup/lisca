@@ -8,6 +8,10 @@
     "beforeBuildCommand": "bun run build:renderer",
     "frontendDist": "../dist"
   },
+  "bundle": {
+    "active": true,
+    "icon": ["icons/icon.ico"]
+  },
   "app": {
     "windows": [
       {
