@@ -2,7 +2,7 @@
 name = "lisca-rs"
 version = "0.1.0"
 edition = "2021"
-description = "Lisca Rust CLI"
+description = "Lisca Rust CLI (GUI-free binary)"
 
 [features]
 default = ["cuda"]

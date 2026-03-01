@@ -18,7 +18,7 @@ use self::commands::{
 #[derive(Parser)]
 #[command(
     name = "lisca-rs",
-    about = "Lisca Rust CLI: convert, crop, register, movie, expression, killing, tissue"
+    about = "Lisca Rust CLI (GUI-free). convert, crop, register, movie, expression, killing, tissue"
 )]
 pub struct Cli {
     #[command(subcommand)]

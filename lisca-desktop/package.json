@@ -3,15 +3,16 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "main": "electron-dist/main.cjs",
   "scripts": {
-    "dev": "concurrently -k \"tsc -p tsconfig.electron.json --watch --preserveWatchOutput\" \"vite\" \"wait-on file:electron-dist/main.cjs tcp:5173 && electron .\"",
-    "build:electron": "tsc -p tsconfig.electron.json",
+    "build:rs": "cd ../lisca-rs && cargo build --release",
+    "dev:tauri": "bunx @tauri-apps/cli dev",
+    "dev:web": "vite",
+    "dev": "bun run dev:tauri",
+    "build:tauri": "bunx @tauri-apps/cli build",
     "build:renderer": "tsc && vite build",
-    "build": "bun run build:electron && bun run build:renderer",
-    "pack": "bunx electron-builder",
-    "test": "bun test",
-    "postinstall": "electron-rebuild -f"
+    "build": "bun run build:rs && bun run build:tauri",
+    "pack": "bun run build:tauri",
+    "test": "bun test"
   },
   "dependencies": {
     "@zarrita/storage": "^0.1.4",
@@ -35,26 +36,11 @@
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@types/sql.js": "^1.4.9",
+    "@tauri-apps/cli": "^2",
     "@vitejs/plugin-react": "^4.3.4",
-    "concurrently": "^9.2.1",
-    "electron": "^34.5.8",
-    "electron-builder": "^26.0.12",
-    "electron-rebuild": "^3.2.9",
     "tailwindcss": "^4.1.18",
     "typescript": "^5.6.3",
     "vite": "^6.0.3",
-    "wait-on": "^8.0.5",
     "tw-animate-css": "^1.4.0"
-  },
-  "build": {
-    "artifactName": "lisca-desktop-windows-x86_64.${ext}",
-    "directories": {
-      "output": "release"
-    },
-    "files": [
-      "dist/**/*",
-      "electron-dist/**/*",
-      "package.json"
-    ]
   }
 }

@@ -1,12 +1,13 @@
 use clap::{Args, ValueEnum};
+use serde::{Deserialize, Serialize};
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum, Serialize, Deserialize)]
 pub enum GridShape {
     Square,
     Hex,
 }
 
-#[derive(Args, Clone, Debug)]
+#[derive(Args, Clone, Debug, Serialize, Deserialize)]
 pub struct RegisterArgs {
     #[arg(long)]
     pub input: String,
