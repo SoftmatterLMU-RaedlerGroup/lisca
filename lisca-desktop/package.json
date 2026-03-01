@@ -4,17 +4,17 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build:rs": "cd ../lisca-rs && cargo build --release",
     "dev:tauri": "bunx @tauri-apps/cli dev",
     "dev:web": "bun run scripts/dev-web.ts",
     "dev": "bun run dev:tauri",
     "build:tauri": "bunx @tauri-apps/cli build",
     "build:renderer": "tsc && vite build",
-    "build": "bun run build:rs && bun run build:tauri",
+    "build": "bun run build:tauri",
     "pack": "bun run build:tauri",
     "test": "bun test"
   },
   "dependencies": {
+    "@tauri-apps/api": "^2.0.0",
     "@zarrita/storage": "^0.1.4",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",

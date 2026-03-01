@@ -28,26 +28,26 @@ struct FitResult {
 }
 
 #[derive(Serialize)]
-struct RegisterDiagnostics {
-    detected_points: usize,
-    inlier_points: usize,
-    initial_mse: f64,
-    final_mse: f64,
+pub struct RegisterDiagnostics {
+    pub detected_points: usize,
+    pub inlier_points: usize,
+    pub initial_mse: f64,
+    pub final_mse: f64,
 }
 
 #[derive(Serialize)]
-struct RegisterOutput {
-    shape: String,
-    a: f64,
-    alpha: f64,
-    b: f64,
-    beta: f64,
-    w: f64,
-    h: f64,
-    dx: f64,
-    dy: f64,
+pub struct RegisterOutput {
+    pub shape: String,
+    pub a: f64,
+    pub alpha: f64,
+    pub b: f64,
+    pub beta: f64,
+    pub w: f64,
+    pub h: f64,
+    pub dx: f64,
+    pub dy: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
-    diagnostics: Option<RegisterDiagnostics>,
+    pub diagnostics: Option<RegisterDiagnostics>,
 }
 
 const MAX_ESTIMATED_PATTERNS: f64 = 500.0;
@@ -857,10 +857,10 @@ fn fit_grid(
     })
 }
 
-pub fn run(
+pub fn run_and_collect(
     args: RegisterArgs,
     progress: impl Fn(f64, &str),
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<RegisterOutput, Box<dyn std::error::Error>> {
     if !args.no_progress {
         progress(0.05, "Loading frame");
     }
@@ -945,8 +945,17 @@ pub fn run(
             None
         },
     };
+    Ok(output)
+}
 
-    let json = if args.pretty {
+pub fn run(
+    args: RegisterArgs,
+    progress: impl Fn(f64, &str),
+) -> Result<(), Box<dyn std::error::Error>> {
+    let pretty = args.pretty;
+    let output = run_and_collect(args, progress)?;
+
+    let json = if pretty {
         serde_json::to_string_pretty(&output)?
     } else {
         serde_json::to_string(&output)?

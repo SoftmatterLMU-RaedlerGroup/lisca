@@ -9,27 +9,6 @@ permissions:
   contents: read
 
 jobs:
-  build-lisca-rs:
-    name: Build lisca-rs (Windows)
-    runs-on: windows-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Build lisca-rs
-        working-directory: lisca-rs
-        run: cargo build --release
-
-      - name: Upload lisca-rs artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: lisca-rs-windows-x86_64
-          path: lisca-rs/target/release/lisca-rs.exe
-          if-no-files-found: error
-
   build-lisca-desktop:
     name: Build lisca-desktop (Windows)
     runs-on: windows-latest
@@ -61,5 +40,4 @@ jobs:
           path: |
             lisca-desktop/release/*
             lisca-desktop/dist/*
-            lisca-desktop/electron-dist/*
           if-no-files-found: error

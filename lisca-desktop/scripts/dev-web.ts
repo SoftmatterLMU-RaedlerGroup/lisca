@@ -34,7 +34,16 @@ if (!(await isPortFree(PORT))) {
 }
 
 const proc = Bun.spawn({
-  cmd: ["bun", "x", "vite", "--port", `${PORT}`, "--strictPort"],
+  cmd: [
+    "bun",
+    "x",
+    "vite",
+    "--port",
+    `${PORT}`,
+    "--strictPort",
+    "--host",
+    "127.0.0.1",
+  ],
   stdout: "inherit",
   stderr: "inherit",
 });
