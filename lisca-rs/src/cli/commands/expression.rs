@@ -1,6 +1,7 @@
 use clap::Args;
+use serde::{Deserialize, Serialize};
 
-#[derive(Args, Clone)]
+#[derive(Args, Clone, Serialize, Deserialize)]
 pub struct ExpressionArgs {
     #[arg(long)]
     pub workspace: String,

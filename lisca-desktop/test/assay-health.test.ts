@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { computeAssayYamlHealth } from "../electron/lib/scan-utils.cts";
+import { computeAssayYamlHealth } from "../src/lib/scan-utils";
 
 describe("assay list health", () => {
   test("marks has_assay_yaml false when yaml missing", async () => {

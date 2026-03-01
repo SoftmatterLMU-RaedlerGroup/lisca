@@ -9,6 +9,8 @@ Desktop UI for Lisca assay management and registration.
 - Info page writes `assay.yaml`
 - Register page loads microscopy image, edits lattice controls, and saves `Pos{id}_bbox.csv`
 
+`lisca-desktop` now uses Tauri with an in-process Rust bridge to call `lisca-rs` directly.
+
 ## Data folder assumptions
 
 - Position folders are named `Pos{N}`
@@ -20,8 +22,19 @@ Desktop UI for Lisca assay management and registration.
 ```bash
 cd C:/Users/ctyja/workspace/lisca/lisca-desktop
 bun install
+bun run build:rs
 bun run dev
 ```
+
+## Tauri (in-process Rust integration)
+
+`lisca-rs` is available as a local Rust dependency in `lisca-desktop/src-tauri/Cargo.toml`:
+
+```toml
+lisca-rs = { path = "../lisca-rs" }
+```
+
+Use the `dev:tauri` / `build:tauri` scripts to run Tauri with in-process Rust command calls.
 
 ## Build
 
@@ -30,6 +43,8 @@ cd C:/Users/ctyja/workspace/lisca/lisca-desktop
 bun run build
 bun run pack
 ```
+
+Packaging is handled by Tauri and produces a single installer.
 
 ## Tests
 

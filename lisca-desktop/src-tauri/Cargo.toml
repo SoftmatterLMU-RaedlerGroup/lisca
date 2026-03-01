@@ -1,0 +1,19 @@
+[package]
+name = "lisca-desktop-tauri"
+version = "0.1.0"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+dirs = "6"
+rfd = "0.15"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+lisca-rs = { path = "../../lisca-rs" }
+uuid = { version = "1", features = ["v4"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+zip = "0.6"
+rusqlite = { version = "0.32", features = ["bundled"] }

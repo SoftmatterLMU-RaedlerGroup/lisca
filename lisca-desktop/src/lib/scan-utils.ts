@@ -24,7 +24,8 @@ export function parsePosDirName(name: string): number | null {
   if (match) {
     return Number.parseInt(match[1], 10);
   }
-const bare = normalized.match(/^(?:\d+)$/);
+
+  const bare = normalized.match(/^(?:\d+)$/);
   return bare ? Number.parseInt(bare[0], 10) : null;
 }
 

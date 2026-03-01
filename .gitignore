@@ -1,5 +1,8 @@
 # Rust build output
 lisca-rs/target/
+lisca-desktop/src-tauri/target/
+lisca-desktop/src-tauri/Cargo.lock
+lisca-desktop/src-tauri/gen/
 
 # Python cache and local env artifacts
 **/__pycache__/

@@ -6,7 +6,7 @@ Phase 1 CLI-first merge of PyAMA + mupattern.
 
 - `core/spec/` canonical contracts (`zarr-layout-v1.md`, `cli-contract-v1.md`)
 - `lisca-py/` Python CLI backend (`lisca-py`)
-- `lisca-rs/` Rust desktop-facing CLI (`lisca-rs` binary)
+- `lisca-rs/` Rust CLI-only binary (`lisca-rs`) used by `lisca-desktop`
 - `lisca-py/tests/` Python schema tests
 - `lisca-rs/tests/` Rust CLI tests
 
@@ -45,6 +45,8 @@ Rust (`lisca-rs`):
 cd lisca-rs
 cargo run -- --help
 ```
+
+`lisca-rs` is a dedicated CLI-only binary (no GUI runtime, no `egui`) that `lisca-desktop` executes as a subprocess for desktop actions.
 
 Rust execution is native in `lisca-rs`:
 
