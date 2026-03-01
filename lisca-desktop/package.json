@@ -6,7 +6,7 @@
   "scripts": {
     "build:rs": "cd ../lisca-rs && cargo build --release",
     "dev:tauri": "bunx @tauri-apps/cli dev",
-    "dev:web": "vite",
+    "dev:web": "vite --port 1430 --strictPort",
     "dev": "bun run dev:tauri",
     "build:tauri": "bunx @tauri-apps/cli build",
     "build:renderer": "tsc && vite build",

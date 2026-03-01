@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "identifier": "com.lisca.desktop",
   "build": {
+    "devUrl": "http://127.0.0.1:1430",
     "beforeDevCommand": "bun run dev:web",
     "beforeBuildCommand": "bun run build:renderer",
     "frontendDist": "../dist"
