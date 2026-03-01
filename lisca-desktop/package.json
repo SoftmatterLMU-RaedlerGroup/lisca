@@ -15,7 +15,6 @@
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",
-    "@zarrita/storage": "^0.1.4",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "lucide-react": "^0.563.0",
@@ -27,8 +26,7 @@
     "sql.js": "^1.14.0",
     "tailwind-merge": "^3.4.0",
     "utif2": "^4.1.0",
-    "yaml": "^2.8.2",
-    "zarrita": "^0.4.0"
+    "yaml": "^2.8.2"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.1.18",
