@@ -6,7 +6,7 @@
   "scripts": {
     "build:rs": "cd ../lisca-rs && cargo build --release",
     "dev:tauri": "bunx @tauri-apps/cli dev",
-    "dev:web": "pwsh -NoProfile -Command \"$c = Get-NetTCPConnection -State Listen -LocalPort 5173 -ErrorAction SilentlyContinue; if ($c) { $c | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { $proc = Get-Process -Id $_ -ErrorAction SilentlyContinue; if ($proc) { $proc.Name } ; Stop-Process -Id $_ -Force }}; vite --port 5173 --strictPort\"",
+    "dev:web": "bun run scripts/dev-web.ts",
     "dev": "bun run dev:tauri",
     "build:tauri": "bunx @tauri-apps/cli build",
     "build:renderer": "tsc && vite build",
