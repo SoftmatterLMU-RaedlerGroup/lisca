@@ -66,12 +66,19 @@ def run_tissue(
     for i, roi_id in enumerate(roi_ids):
         arr = roi_root[f"roi/{roi_id}/raw"]
         n_times, _, _, h, w = arr.shape
-        mask_arr = masks_root.zeros(
+        mask_shape = (n_times, h, w)
+        mask_kwargs: dict[str, object] = {}
+        mask_shards = schema.mask_shards(mask_shape)
+        if mask_shards is not None:
+            mask_kwargs["shards"] = mask_shards
+        mask_arr = masks_root.create_array(
             name=f"roi/{roi_id}/mask",
-            shape=(n_times, h, w),
-            chunks=(min(16, n_times), min(256, h), min(256, w)),
+            shape=mask_shape,
+            chunks=schema.mask_chunks(mask_shape),
             dtype=np.uint32,
             overwrite=True,
+            fill_value=0,
+            **mask_kwargs,
         )
         bg_arr = None
         if bg_root is not None:

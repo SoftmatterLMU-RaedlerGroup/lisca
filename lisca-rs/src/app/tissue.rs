@@ -41,7 +41,7 @@ fn read_frame_f32(
     h: usize,
     w: usize,
 ) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
-    let chunk = zarr::read_chunk_u16(crop_arr, &[t, channel, 0, 0, 0])?;
+    let chunk = zarr::read_raw_frame_u16(crop_arr, t, channel, 0)?;
     let out: Vec<f32> = chunk.iter().map(|&v| v as f32).collect();
     debug_assert_eq!(out.len(), h * w);
     Ok(out)
@@ -86,9 +86,19 @@ fn run_segment(
             return Err(format!("Cellpose model not found at {}", model_file.display()).into());
         }
     } else if method == "cellsam" {
-        for name in ["image_encoder.onnx", "cellfinder.onnx", "mask_decoder.onnx", "image_pe.npy"] {
+        for name in [
+            "image_encoder.onnx",
+            "cellfinder.onnx",
+            "mask_decoder.onnx",
+            "image_pe.npy",
+        ] {
             if !model_dir.join(name).exists() {
-                return Err(format!("CellSAM model file not found: {}/{}", model_dir.display(), name).into());
+                return Err(format!(
+                    "CellSAM model file not found: {}/{}",
+                    model_dir.display(),
+                    name
+                )
+                .into());
             }
         }
     } else {
@@ -120,20 +130,32 @@ fn run_segment(
                 &mask_store,
                 &format!("/roi/{}/mask", roi_id),
                 vec![n_t as u64, h as u64, w as u64],
-                vec![1, h as u64, w as u64],
-                Some(serde_json::json!({"axis_names": ["t","y","x"]}).as_object().cloned().unwrap()),
+                schema::mask_chunks(&[n_t as u64, h as u64, w as u64]),
+                schema::mask_shards(&[n_t as u64, h as u64, w as u64]),
+                Some(
+                    serde_json::json!({"axis_names": ["t","y","x"]})
+                        .as_object()
+                        .cloned()
+                        .unwrap(),
+                ),
             )?;
 
             for t in 0..n_t {
                 let phase = read_frame_f32(&arr, t as u64, args.channel_phase as u64, h, w)?;
                 let fluo = read_frame_f32(&arr, t as u64, args.channel_fluorescence as u64, h, w)?;
                 let chw = cellpose_rs::preprocess::build_chw_image(phase, fluo, h, w);
-                let params = CellposeParams { batch_size: args.batch_size, ..Default::default() };
+                let params = CellposeParams {
+                    batch_size: args.batch_size,
+                    ..Default::default()
+                };
                 let masks_u32 = session.segment(&chw, h, w, params)?;
                 let masks_u16: Vec<u16> = masks_u32.iter().map(|&v| v as u16).collect();
-                zarr::store_chunk_u16(&mask_arr, &[t as u64, 0, 0], &masks_u16)?;
+                zarr::store_mask_frame_u16(&mask_arr, t as u64, &masks_u16)?;
                 done += 1;
-                progress(done as f64 / total_frames as f64 * 0.5, &format!("Segment roi {}/{}, frame {}/{}", ci + 1, n_rois, t + 1, n_t));
+                progress(
+                    done as f64 / total_frames as f64 * 0.5,
+                    &format!("Segment roi {}/{}, frame {}/{}", ci + 1, n_rois, t + 1, n_t),
+                );
             }
         }
     } else {
@@ -150,8 +172,14 @@ fn run_segment(
                 &mask_store,
                 &format!("/roi/{}/mask", roi_id),
                 vec![n_t as u64, h as u64, w as u64],
-                vec![1, h as u64, w as u64],
-                Some(serde_json::json!({"axis_names": ["t","y","x"]}).as_object().cloned().unwrap()),
+                schema::mask_chunks(&[n_t as u64, h as u64, w as u64]),
+                schema::mask_shards(&[n_t as u64, h as u64, w as u64]),
+                Some(
+                    serde_json::json!({"axis_names": ["t","y","x"]})
+                        .as_object()
+                        .cloned()
+                        .unwrap(),
+                ),
             )?;
 
             for t in 0..n_t {
@@ -161,9 +189,12 @@ fn run_segment(
                 let params = CellsamParams::default();
                 let masks_u32 = session.segment(&chw, h, w, params)?;
                 let masks_u16: Vec<u16> = masks_u32.iter().map(|&v| v as u16).collect();
-                zarr::store_chunk_u16(&mask_arr, &[t as u64, 0, 0], &masks_u16)?;
+                zarr::store_mask_frame_u16(&mask_arr, t as u64, &masks_u16)?;
                 done += 1;
-                progress(done as f64 / total_frames as f64 * 0.5, &format!("Segment roi {}/{}, frame {}/{}", ci + 1, n_rois, t + 1, n_t));
+                progress(
+                    done as f64 / total_frames as f64 * 0.5,
+                    &format!("Segment roi {}/{}, frame {}/{}", ci + 1, n_rois, t + 1, n_t),
+                );
             }
         }
     }
@@ -181,7 +212,11 @@ fn run_analyze(
     let roi_ids = list_roi_ids(roi_store_path)?;
 
     let crop_store = zarr::open_store(roi_store_path)?;
-    let bg_store = if bg_store_path.exists() { Some(zarr::open_store(bg_store_path)?) } else { None };
+    let bg_store = if bg_store_path.exists() {
+        Some(zarr::open_store(bg_store_path)?)
+    } else {
+        None
+    };
     let mask_store = zarr::open_store(masks_path)?;
 
     let mut wtr = fs::File::create(Path::new(&args.output))?;
@@ -210,13 +245,17 @@ fn run_analyze(
         };
 
         for t in 0..n_t {
-            let fluo_raw = zarr::read_chunk_u16(&arr, &[t as u64, args.channel_fluorescence as u64, 0, 0, 0])?;
-            let masks = zarr::read_chunk_u16(&mask_arr, &[t as u64, 0, 0])?;
+            let fluo_raw =
+                zarr::read_raw_frame_u16(&arr, t as u64, args.channel_fluorescence as u64, 0)?;
+            let masks = zarr::read_mask_frame_u16(&mask_arr, t as u64)?;
 
             let max_label = *masks.iter().max().unwrap_or(&0) as usize;
             if max_label == 0 {
                 done += 1;
-                progress(0.5 + done as f64 / total_frames as f64 * 0.5, &format!("Analyze roi {}/{}, frame {}/{}", ci + 1, n_rois, t + 1, n_t));
+                progress(
+                    0.5 + done as f64 / total_frames as f64 * 0.5,
+                    &format!("Analyze roi {}/{}, frame {}/{}", ci + 1, n_rois, t + 1, n_t),
+                );
                 continue;
             }
 
@@ -231,29 +270,37 @@ fn run_analyze(
             }
 
             let bg_val = if let Some(ref bg_arr) = bg_arr {
-                zarr::read_chunk_u16(bg_arr, &[t as u64, args.channel_fluorescence as u64, 0])
-                    .ok()
-                    .and_then(|d| d.first().copied())
-                    .unwrap_or_else(|| median_u16(&fluo_raw))
+                zarr::read_bg_value_u16(bg_arr, t as u64, args.channel_fluorescence as u64, 0)
+                    .unwrap_or_else(|_| median_u16(&fluo_raw))
             } else {
                 median_u16(&fluo_raw)
             };
 
             for lbl in 1..=max_label {
                 if counts[lbl] > 0 {
-                    writeln!(wtr, "{},{},{},{},{},{}", t, roi_id, lbl, sums[lbl], counts[lbl], bg_val)?;
+                    writeln!(
+                        wtr,
+                        "{},{},{},{},{},{}",
+                        t, roi_id, lbl, sums[lbl], counts[lbl], bg_val
+                    )?;
                 }
             }
 
             done += 1;
-            progress(0.5 + done as f64 / total_frames as f64 * 0.5, &format!("Analyze roi {}/{}, frame {}/{}", ci + 1, n_rois, t + 1, n_t));
+            progress(
+                0.5 + done as f64 / total_frames as f64 * 0.5,
+                &format!("Analyze roi {}/{}, frame {}/{}", ci + 1, n_rois, t + 1, n_t),
+            );
         }
     }
 
     Ok(())
 }
 
-pub fn run(args: TissueArgs, progress: impl Fn(f64, &str)) -> Result<(), Box<dyn std::error::Error>> {
+pub fn run(
+    args: TissueArgs,
+    progress: impl Fn(f64, &str),
+) -> Result<(), Box<dyn std::error::Error>> {
     let workspace = Path::new(&args.workspace);
     let roi_store_path = workspace.join(schema::roi_store_dir(args.pos));
     let bg_store_path = workspace.join(schema::bg_store_dir(args.pos));
@@ -264,7 +311,13 @@ pub fn run(args: TissueArgs, progress: impl Fn(f64, &str)) -> Result<(), Box<dyn
         .unwrap_or_else(|| workspace.join(format!("Pos{}_masks.zarr", args.pos)));
 
     run_segment(&args, &roi_store_path, &masks_path, &progress)?;
-    run_analyze(&args, &roi_store_path, &bg_store_path, &masks_path, &progress)?;
+    run_analyze(
+        &args,
+        &roi_store_path,
+        &bg_store_path,
+        &masks_path,
+        &progress,
+    )?;
 
     progress(1.0, "Done");
     Ok(())

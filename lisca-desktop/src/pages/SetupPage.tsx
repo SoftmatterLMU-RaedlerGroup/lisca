@@ -49,6 +49,9 @@ export default function SetupPage() {
   const [channelInput, setChannelInput] = useState("");
   const [channelNameInput, setChannelNameInput] = useState("");
   const [editingChannelIndex, setEditingChannelIndex] = useState<number | null>(null);
+  const [classificationOptions, setClassificationOptions] = useState<string[]>([]);
+  const [classificationOptionInput, setClassificationOptionInput] = useState("");
+  const [editingClassificationOptionIndex, setEditingClassificationOptionIndex] = useState<number | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [downloadingAssets, setDownloadingAssets] = useState(false);
   const [settingsMessage, setSettingsMessage] = useState<string | null>(null);
@@ -122,6 +125,7 @@ export default function SetupPage() {
     setAddTab("type");
     setEditingAssayId(null);
     setModalLoading(false);
+    setSaving(false);
     setName("");
     setDate(todayIso());
     setType("killing");
@@ -134,6 +138,9 @@ export default function SetupPage() {
     setChannelInput("");
     setChannelNameInput("");
     setEditingChannelIndex(null);
+    setClassificationOptions([]);
+    setClassificationOptionInput("");
+    setEditingClassificationOptionIndex(null);
     setAddError(null);
   }, []);
 
@@ -145,6 +152,7 @@ export default function SetupPage() {
   const handleEditAssay = useCallback(async (assay: AssayListItem) => {
     setAddOpen(true);
     setModalLoading(true);
+    setSaving(false);
     setEditingAssayId(assay.id);
     setAddTab("info");
     setAddError(null);
@@ -161,6 +169,9 @@ export default function SetupPage() {
     setChannelInput("");
     setChannelNameInput("");
     setEditingChannelIndex(null);
+    setClassificationOptions([]);
+    setClassificationOptionInput("");
+    setEditingClassificationOptionIndex(null);
 
     try {
       if (!assay.has_assay_yaml) return;
@@ -176,6 +187,7 @@ export default function SetupPage() {
       setFolder(parsed.data_folder);
       setSamples(parsed.samples);
       setChannelNames(parsed.channel_names ?? []);
+      setClassificationOptions(parsed.annotations?.classification_options ?? []);
     } catch (err) {
       setAddError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -328,6 +340,58 @@ export default function SetupPage() {
     [editingChannelIndex],
   );
 
+  const handleAddOrUpdateClassificationOption = useCallback(() => {
+    const nextValue = classificationOptionInput.trim();
+    if (!nextValue) {
+      setAddError("classification option is required.");
+      return;
+    }
+
+    setClassificationOptions((prev) => {
+      const next = [...prev];
+      if (editingClassificationOptionIndex != null && next[editingClassificationOptionIndex]) {
+        next[editingClassificationOptionIndex] = nextValue;
+      } else {
+        next.push(nextValue);
+      }
+
+      const normalized: string[] = [];
+      const seen = new Set<string>();
+      for (const value of next) {
+        const trimmed = value.trim();
+        if (!trimmed || seen.has(trimmed)) continue;
+        seen.add(trimmed);
+        normalized.push(trimmed);
+      }
+      return normalized;
+    });
+
+    setEditingClassificationOptionIndex(null);
+    setClassificationOptionInput("");
+    setAddError(null);
+  }, [classificationOptionInput, editingClassificationOptionIndex]);
+
+  const beginEditClassificationOption = useCallback(
+    (index: number) => {
+      const option = classificationOptions[index];
+      if (!option) return;
+      setEditingClassificationOptionIndex(index);
+      setClassificationOptionInput(option);
+    },
+    [classificationOptions],
+  );
+
+  const removeClassificationOption = useCallback(
+    (index: number) => {
+      setClassificationOptions((prev) => prev.filter((_, i) => i !== index));
+      if (editingClassificationOptionIndex === index) {
+        setEditingClassificationOptionIndex(null);
+        setClassificationOptionInput("");
+      }
+    },
+    [editingClassificationOptionIndex],
+  );
+
   const handleSave = useCallback(async () => {
     if (!canSave) {
       setAddError("name, date, and data folder are required.");
@@ -337,50 +401,61 @@ export default function SetupPage() {
     setSaving(true);
     setAddError(null);
 
-    const folderPath = folder.trim();
-    const scan = await api.register.scan(folderPath);
-    const tifChannels = [...new Set(scan.channels.filter((value) => Number.isFinite(value)))].sort((a, b) => a - b);
-    if (tifChannels.length === 0) {
-      setAddError("no tiff channels found in selected data folder.");
-      setSaving(false);
-      return;
-    }
-
-    const normalizedChannelNames = channelNames
-      .filter((entry) => Number.isFinite(entry.channel) && entry.channel >= 0 && entry.name.trim().length > 0)
-      .map((entry) => ({ channel: Math.floor(entry.channel), name: entry.name.trim() }))
-      .sort((a, b) => a.channel - b.channel);
-
-    const assigned = [...new Set(normalizedChannelNames.map((entry) => entry.channel))].sort((a, b) => a - b);
-    const invalidAssigned = assigned.filter((channel) => !tifChannels.includes(channel));
-    if (invalidAssigned.length > 0) {
-      setAddError(`assigned channels not found in tiff names: ${invalidAssigned.join(", ")}.`);
-      setSaving(false);
-      return;
-    }
-
-    const missingAssignments = tifChannels.filter((channel) => !assigned.includes(channel));
-    if (missingAssignments.length > 0) {
-      setAddError(`missing channel assignment for tiff channels: ${missingAssignments.join(", ")}.`);
-      setSaving(false);
-      return;
-    }
-
-    const brightfield = tifChannels.includes(0) ? 0 : (tifChannels[0] ?? 0);
-
-    const nextYaml = {
-      version: 1 as const,
-      name: name.trim(),
-      date: date.trim(),
-      type,
-      data_folder: folderPath,
-      brightfield_channel: brightfield,
-      channel_names: normalizedChannelNames,
-      samples,
-      register: { ...DEFAULT_REGISTER },
-    };
-
     try {
+      const folderPath = folder.trim();
+      const scan = await api.register.scan(folderPath);
+      const tifChannels = [...new Set(scan.channels.filter((value) => Number.isFinite(value)))].sort((a, b) => a - b);
+      if (tifChannels.length === 0) {
+        setAddError("no tiff channels found in selected data folder.");
+        return;
+      }
+
+      const normalizedChannelNames = channelNames
+        .filter((entry) => Number.isFinite(entry.channel) && entry.channel >= 0 && entry.name.trim().length > 0)
+        .map((entry) => ({ channel: Math.floor(entry.channel), name: entry.name.trim() }))
+        .sort((a, b) => a.channel - b.channel);
+      const normalizedClassificationOptions: string[] = [];
+      const seenClassificationOptions = new Set<string>();
+      for (const value of classificationOptions) {
+        const trimmed = value.trim();
+        if (!trimmed || seenClassificationOptions.has(trimmed)) continue;
+        seenClassificationOptions.add(trimmed);
+        normalizedClassificationOptions.push(trimmed);
+      }
+
+      const assigned = [...new Set(normalizedChannelNames.map((entry) => entry.channel))].sort((a, b) => a - b);
+      const invalidAssigned = assigned.filter((channel) => !tifChannels.includes(channel));
+      if (invalidAssigned.length > 0) {
+        setAddError(`assigned channels not found in tiff names: ${invalidAssigned.join(", ")}.`);
+        return;
+      }
+
+      const missingAssignments = tifChannels.filter((channel) => !assigned.includes(channel));
+      if (missingAssignments.length > 0) {
+        setAddError(`missing channel assignment for tiff channels: ${missingAssignments.join(", ")}.`);
+        return;
+      }
+
+      const brightfield = tifChannels.includes(0) ? 0 : (tifChannels[0] ?? 0);
+
+      const nextYaml = {
+        version: 1 as const,
+        name: name.trim(),
+        date: date.trim(),
+        type,
+        data_folder: folderPath,
+        brightfield_channel: brightfield,
+        channel_names: normalizedChannelNames,
+        annotations:
+          normalizedClassificationOptions.length > 0
+            ? {
+                classification_options: normalizedClassificationOptions,
+              }
+            : undefined,
+        samples,
+        register: { ...DEFAULT_REGISTER },
+      };
+
       const yaml = stringifyAssayYaml(nextYaml);
       const write = await api.assays.writeYaml(folderPath, yaml);
       if (!write.ok) {
@@ -404,7 +479,7 @@ export default function SetupPage() {
     } finally {
       setSaving(false);
     }
-  }, [canSave, channelNames, date, editingAssayId, folder, loadAssays, name, navigate, samples, type]);
+  }, [canSave, channelNames, classificationOptions, date, editingAssayId, folder, loadAssays, name, navigate, samples, type]);
 
   const handleDownloadAssets = useCallback(async () => {
     setDownloadingAssets(true);
@@ -829,6 +904,53 @@ export default function SetupPage() {
                               event.preventDefault();
                               event.stopPropagation();
                               removeSample(index);
+                            }
+                          }}
+                        >
+                          x
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="rounded-md border bg-muted/25 p-3">
+                  <div className="mb-2">
+                    <Label className="text-sm tracking-wider text-muted-foreground">classification options</Label>
+                  </div>
+                  <div className="mb-3 grid gap-2 md:grid-cols-[1fr_auto]">
+                    <Input
+                      placeholder="classification option"
+                      value={classificationOptionInput}
+                      onChange={(event) => setClassificationOptionInput(event.target.value)}
+                    />
+                    <Button variant="outline" onClick={handleAddOrUpdateClassificationOption}>
+                      {editingClassificationOptionIndex == null ? "add" : "update"}
+                    </Button>
+                  </div>
+
+                  <div className="flex min-h-8 flex-wrap gap-1.5">
+                    {classificationOptions.map((option, index) => (
+                      <button
+                        key={`${option}-${index}`}
+                        type="button"
+                        onClick={() => beginEditClassificationOption(index)}
+                        className="inline-flex items-center gap-1 rounded-full border bg-background px-2 py-0.5 text-xs transition-colors hover:bg-accent/50"
+                      >
+                        <span className="font-medium">{option}</span>
+                        <span
+                          role="button"
+                          tabIndex={0}
+                          className="rounded px-1 text-muted-foreground hover:text-foreground"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            removeClassificationOption(index);
+                          }}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter" || event.key === " ") {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              removeClassificationOption(index);
                             }
                           }}
                         >

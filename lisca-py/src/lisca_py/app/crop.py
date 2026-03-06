@@ -91,6 +91,10 @@ def run_crop(input_dir: Path, pos: int, bbox: Path, output_workspace: Path, back
         roi_id = int(roi_ids[i])
         h, w = int(bb["h"]), int(bb["w"])
         shape = (n_times, n_channels, n_z, h, w)
+        raw_kwargs: dict[str, object] = {}
+        raw_shards = schema.raw_shards(shape)
+        if raw_shards is not None:
+            raw_kwargs["shards"] = raw_shards
         arr = roi_root.create_array(
             name=schema.RAW_ARRAY_PATH_TEMPLATE.format(roi_id=roi_id),
             shape=shape,
@@ -99,12 +103,17 @@ def run_crop(input_dir: Path, pos: int, bbox: Path, output_workspace: Path, back
             overwrite=True,
             fill_value=0,
             compressors=[codec()],
+            **raw_kwargs,
         )
         arr.attrs["axis_names"] = schema.RAW_AXIS_NAMES
         arr.attrs["schema_version"] = schema.SCHEMA_VERSION
         arrays[roi_id] = arr
         if background:
             bg_shape = (n_times, n_channels, n_z)
+            bg_kwargs: dict[str, object] = {}
+            bg_shards = schema.bg_shards(bg_shape)
+            if bg_shards is not None:
+                bg_kwargs["shards"] = bg_shards
             bg_arr = bg_root.create_array(
                 name=schema.BG_ARRAY_PATH_TEMPLATE.format(roi_id=roi_id),
                 shape=bg_shape,
@@ -113,6 +122,7 @@ def run_crop(input_dir: Path, pos: int, bbox: Path, output_workspace: Path, back
                 overwrite=True,
                 fill_value=0,
                 compressors=[codec()],
+                **bg_kwargs,
             )
             bg_arr.attrs["axis_names"] = schema.BG_AXIS_NAMES
             bg_arr.attrs["schema_version"] = schema.SCHEMA_VERSION

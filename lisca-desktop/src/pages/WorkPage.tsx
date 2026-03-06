@@ -1530,10 +1530,9 @@ export default function WorkPage() {
                   times={scan?.times ?? []}
                   selectedTime={selectedTime}
                   onSelectTime={setSelectedTime}
-                  channels={scan?.channels ?? []}
                   selectedChannel={selectedChannel}
-                  zSlices={scan?.zSlices ?? []}
                   selectedZ={selectedZ}
+                  classificationOptions={assayYaml?.annotations?.classification_options ?? []}
                 />
               ) : (
                 <AnalyzeTab

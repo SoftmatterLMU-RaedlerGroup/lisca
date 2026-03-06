@@ -1,6 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
+  AnnotationClassificationRow,
+  AnnotationLoadResponse,
+  AnnotationSegmentationRow,
+  AnnotationSpotRow,
   AssayListItem,
   AssayMeta,
   AutoRegisterResponse,
@@ -96,6 +100,17 @@ export const api = {
       c: number;
       z: number;
     }): Promise<LoadRoiFrameResponse> => invokeCommand<LoadRoiFrameResponse>("roi_load_frame", payload),
+  },
+  annotations: {
+    load: (payload: { folder: string; pos: number }): Promise<AnnotationLoadResponse> =>
+      invokeCommand<AnnotationLoadResponse>("annotations_load", payload),
+    save: (payload: {
+      folder: string;
+      pos: number;
+      classifications: AnnotationClassificationRow[];
+      spots: AnnotationSpotRow[];
+      segmentations: AnnotationSegmentationRow[];
+    }): Promise<boolean> => invokeCommand<boolean>("annotations_save", payload),
   },
   tasks: {
     insert: (task: TaskRecord): Promise<boolean> => invokeCommand<boolean>("tasks_insert", { task }),
