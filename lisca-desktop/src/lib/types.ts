@@ -187,9 +187,6 @@ export interface KillPredictionRow {
 export type DownloadAssetsProgressPhase =
   | "start"
   | "model"
-  | "ffmpeg"
-  | "extract"
-  | "finalize"
   | "done"
   | "error";
 

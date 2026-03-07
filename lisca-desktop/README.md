@@ -10,6 +10,7 @@ Desktop UI for Lisca assay management and registration.
 - Register page loads microscopy image, edits lattice controls, and saves `Pos{id}_bbox.csv`
 
 `lisca-desktop` now uses Tauri with an in-process Rust bridge to call `lisca-rs` directly.
+Windows builds bundle `ffmpeg.exe` as a Tauri sidecar, and the settings modal only downloads model files.
 
 ## Data folder assumptions
 

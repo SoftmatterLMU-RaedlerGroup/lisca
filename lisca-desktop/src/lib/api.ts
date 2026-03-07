@@ -219,6 +219,7 @@ export const api = {
           ok: true;
           modelDir: string;
           ffmpegPath: string;
+          ffmpegPresent: boolean;
           downloadedFiles: string[];
         }
       | {
@@ -233,6 +234,7 @@ export const api = {
           ok: true;
           modelPath: string;
           ffmpegPath: string;
+          ffmpegPresent: boolean;
           missing: string[];
           allPresent: boolean;
         }
