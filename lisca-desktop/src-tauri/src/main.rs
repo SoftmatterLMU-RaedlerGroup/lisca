@@ -643,8 +643,8 @@ fn assays_pick_assay_yaml() -> Option<Value> {
 }
 
 #[tauri::command]
-fn assays_read_yaml(payload: RegisterScanPayload) -> Value {
-    let path = Path::new(&payload.folder).join("assay.yaml");
+fn assays_read_yaml(folder: String) -> Value {
+    let path = Path::new(&folder).join("assay.yaml");
     match fs::read_to_string(&path) {
         Ok(yaml) => json!({"ok": true, "yaml": yaml}),
         Err(error) => json!({"ok": false, "error": error.to_string()}),
@@ -1766,14 +1766,27 @@ fn parse_tiff_filename(name: &str) -> Option<(u32, u32, u32, u32)> {
     } else {
         return None;
     };
-    let parts: Vec<&str> = stem.split('_').collect();
-    if parts.len() != 4 {
-        return None;
-    }
-    let channel: u32 = parts.first()?.strip_prefix("img_channel")?.parse().ok()?;
-    let pos: u32 = parts.get(1)?.strip_prefix("position")?.parse().ok()?;
-    let time: u32 = parts.get(2)?.strip_prefix("time")?.parse().ok()?;
-    let z: u32 = parts.get(3)?.strip_prefix("z")?.parse().ok()?;
+    let normalized = stem.replace('-', "_");
+    let parts: Vec<&str> = normalized.split('_').collect();
+    let (channel_part, pos_part, time_part, z_part) = match parts.as_slice() {
+        [first, pos, time, z] => (*first, *pos, *time, *z),
+        ["img", second, pos, time, z] => (*second, *pos, *time, *z),
+        _ => return None,
+    };
+
+    let parse_axis = |value: &str, prefix: &str| -> Option<u32> {
+        value.strip_prefix(prefix)?.parse().ok()
+    };
+
+    let channel = if channel_part.starts_with("img_channel") {
+        parse_axis(channel_part, "img_channel")
+    } else {
+        parse_axis(channel_part, "channel")
+    }?;
+    let pos = parse_axis(pos_part, "position")?;
+    let time = parse_axis(time_part, "time")?;
+    let z = parse_axis(z_part, "z")?;
+
     Some((channel, pos, time, z))
 }
 
@@ -2325,5 +2338,17 @@ mod tests {
         assert!(!annotation_classification_csv_path(&temp_dir.path, pos).exists());
         assert!(!annotation_spot_csv_path(&temp_dir.path, pos).exists());
         assert!(!annotation_segmentation_csv_path(&temp_dir.path, pos).exists());
+    }
+
+    #[test]
+    fn parse_tiff_filename_accepts_img_channel_prefix() {
+        let parsed = parse_tiff_filename("img_channel000_position140_time000000000_z000.tif");
+        assert_eq!(parsed, Some((0, 140, 0, 0)));
+    }
+
+    #[test]
+    fn parse_tiff_filename_accepts_img_prefix_segments() {
+        let parsed = parse_tiff_filename("img_channel000-position140-time000000001-z000.tif");
+        assert_eq!(parsed, Some((0, 140, 1, 0)));
     }
 }
