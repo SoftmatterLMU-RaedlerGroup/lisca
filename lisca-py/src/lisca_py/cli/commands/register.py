@@ -1,13 +1,53 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Annotated, Literal
 
 import typer
 
 from ...app.register import run_register
-from ...common.progress import progress_json_stderr
+from ...common.progress import legacy_callback_adapter, progress_terminal_stderr
+
+
+def _format_number(value: object) -> str:
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        return f"{value:.6f}".rstrip("0").rstrip(".")
+    return str(value)
+
+
+def format_register_summary(result: dict[str, object], *, pretty: bool = False) -> str:
+    label_width = 14 if pretty else 0
+
+    def line(label: str, value: object) -> str:
+        if pretty:
+            return f"{label:<{label_width}} {value}"
+        return f"{label}: {value}"
+
+    lines = [
+        line("shape", result.get("shape", "")),
+        line("a", _format_number(result.get("a", ""))),
+        line("alpha", _format_number(result.get("alpha", ""))),
+        line("b", _format_number(result.get("b", ""))),
+        line("beta", _format_number(result.get("beta", ""))),
+        line("w", _format_number(result.get("w", ""))),
+        line("h", _format_number(result.get("h", ""))),
+        line("dx", _format_number(result.get("dx", ""))),
+        line("dy", _format_number(result.get("dy", ""))),
+    ]
+
+    diagnostics = result.get("diagnostics")
+    if isinstance(diagnostics, dict) and diagnostics:
+        if pretty:
+            lines.append("")
+            lines.append("diagnostics")
+        for key in ("detected_points", "inlier_points", "initial_mse", "final_mse"):
+            if key in diagnostics:
+                label = key if not pretty else f"  {key}"
+                lines.append(line(label, _format_number(diagnostics[key])))
+
+    return "\n".join(lines)
 
 
 def command(
@@ -32,6 +72,7 @@ def command(
     pretty: Annotated[bool, typer.Option("--pretty")] = False,
     no_progress: Annotated[bool, typer.Option("--no-progress")] = False,
 ) -> None:
+    sink = None if no_progress else progress_terminal_stderr()
     result = run_register(
         input_dir=input,
         pos=pos,
@@ -51,6 +92,6 @@ def command(
         inlier_frac=inlier_frac,
         refine_iters=refine_iters,
         diagnostics=diagnostics,
-        on_progress=None if no_progress else progress_json_stderr,
+        on_progress=legacy_callback_adapter(sink),
     )
-    print(json.dumps(result, indent=2 if pretty else None))
+    print(format_register_summary(result, pretty=pretty))

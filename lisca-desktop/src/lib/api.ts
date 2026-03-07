@@ -16,6 +16,7 @@ import type {
   ReadRegistrationResponse,
   ReadImageResponse,
   TaskRecord,
+  TaskProgressPayload,
 } from "@/lib/types";
 
 async function invokeCommand<T>(command: string, payload?: Record<string, unknown>): Promise<T> {
@@ -43,6 +44,21 @@ function safeListenProgress(
     unlisten = () => {
       fnA();
       fnB();
+    };
+  })();
+  return () => unlisten();
+}
+
+function safeListenTaskProgress(
+  callback: (payload: TaskProgressPayload) => void,
+): () => void {
+  let unlisten: UnlistenFn = () => {};
+  void (async () => {
+    const fn = await listen<TaskProgressPayload>("task-progress", (event) => {
+      callback(event.payload);
+    });
+    unlisten = () => {
+      fn();
     };
   })();
   return () => unlisten();
@@ -138,6 +154,8 @@ export const api = {
     ): Promise<boolean> => invokeCommand<boolean>("tasks_update", { id, updates }),
     list: (): Promise<TaskRecord[]> => invokeCommand<TaskRecord[]>("tasks_list"),
     deleteCompleted: (): Promise<number> => invokeCommand<number>("tasks_delete_completed"),
+    onProgress: (callback: (payload: TaskProgressPayload) => void): (() => void) =>
+      safeListenTaskProgress(callback),
     runRegisterAutoDetect: (payload: {
       taskId: string;
       folder: string;

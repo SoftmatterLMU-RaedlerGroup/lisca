@@ -302,13 +302,12 @@ fn fill_holes(src: &[f64], w: usize, h: usize) -> Vec<f64> {
     let mut visited = vec![0u8; w * h];
     let mut queue = VecDeque::new();
 
-    let enqueue =
-        |idx: usize, dst: &mut [f64], visited: &mut [u8], queue: &mut VecDeque<usize>| {
-            if visited[idx] == 0 && dst[idx] == 0.0 {
-                visited[idx] = 1;
-                queue.push_back(idx);
-            }
-        };
+    let enqueue = |idx: usize, dst: &mut [f64], visited: &mut [u8], queue: &mut VecDeque<usize>| {
+        if visited[idx] == 0 && dst[idx] == 0.0 {
+            visited[idx] = 1;
+            queue.push_back(idx);
+        }
+    };
 
     for x in 0..w {
         enqueue(x, &mut dst, &mut visited, &mut queue);
@@ -861,14 +860,10 @@ pub fn run_and_collect(
     args: RegisterArgs,
     progress: impl Fn(f64, &str),
 ) -> Result<RegisterOutput, Box<dyn std::error::Error>> {
-    if !args.no_progress {
-        progress(0.05, "Loading frame");
-    }
+    progress(0.05, "Loading frame");
     let (gray, width, height) = load_requested_frame(&args)?;
 
-    if !args.no_progress {
-        progress(0.25, "Detecting grid points");
-    }
+    progress(0.25, "Detecting grid points");
     let points = detect_grid_points(&gray, width, height, &args);
     if points.len() < 3 {
         return Err(format!(
@@ -882,12 +877,10 @@ pub fn run_and_collect(
         GridShape::Square => PI / 2.0,
         GridShape::Hex => PI / 3.0,
     };
-    if !args.no_progress {
-        progress(
-            0.65,
-            &format!("Fitting lattice from {} points", points.len()),
-        );
-    }
+    progress(
+        0.65,
+        &format!("Fitting lattice from {} points", points.len()),
+    );
     let fit = fit_grid(
         &points,
         width,
@@ -898,15 +891,9 @@ pub fn run_and_collect(
     )
     .ok_or("grid_fit_failed: insufficient peaks or unstable lattice fit")?;
 
-    let estimated_patterns = estimate_pattern_count(
-        width,
-        height,
-        fit.a,
-        fit.alpha,
-        fit.b,
-        fit.beta,
-    )
-    .ok_or("grid_fit_failed: degenerate lattice basis")?;
+    let estimated_patterns =
+        estimate_pattern_count(width, height, fit.a, fit.alpha, fit.b, fit.beta)
+            .ok_or("grid_fit_failed: degenerate lattice basis")?;
     if estimated_patterns > MAX_ESTIMATED_PATTERNS {
         return Err(format!(
             "grid_fit_failed: estimated pattern count {} exceeds limit {}",
@@ -916,9 +903,7 @@ pub fn run_and_collect(
         .into());
     }
 
-    if !args.no_progress {
-        progress(1.0, "Register fit complete");
-    }
+    progress(1.0, "Register fit complete");
 
     let shape = match args.grid {
         GridShape::Square => "square".to_string(),
@@ -948,6 +933,76 @@ pub fn run_and_collect(
     Ok(output)
 }
 
+fn format_number(value: f64) -> String {
+    let mut formatted = format!("{value:.6}");
+    while formatted.contains('.') && formatted.ends_with('0') {
+        formatted.pop();
+    }
+    if formatted.ends_with('.') {
+        formatted.pop();
+    }
+    formatted
+}
+
+fn format_register_summary(output: &RegisterOutput, pretty: bool) -> String {
+    let line = |label: &str, value: String| -> String {
+        if pretty {
+            format!("{label:<14} {value}")
+        } else {
+            format!("{label}: {value}")
+        }
+    };
+
+    let mut lines = vec![
+        line("shape", output.shape.clone()),
+        line("a", format_number(output.a)),
+        line("alpha", format_number(output.alpha)),
+        line("b", format_number(output.b)),
+        line("beta", format_number(output.beta)),
+        line("w", format_number(output.w)),
+        line("h", format_number(output.h)),
+        line("dx", format_number(output.dx)),
+        line("dy", format_number(output.dy)),
+    ];
+
+    if let Some(diagnostics) = &output.diagnostics {
+        if pretty {
+            lines.push(String::new());
+            lines.push("diagnostics".to_string());
+        }
+        lines.push(line(
+            if pretty {
+                "  detected_points"
+            } else {
+                "detected_points"
+            },
+            diagnostics.detected_points.to_string(),
+        ));
+        lines.push(line(
+            if pretty {
+                "  inlier_points"
+            } else {
+                "inlier_points"
+            },
+            diagnostics.inlier_points.to_string(),
+        ));
+        lines.push(line(
+            if pretty {
+                "  initial_mse"
+            } else {
+                "initial_mse"
+            },
+            format_number(diagnostics.initial_mse),
+        ));
+        lines.push(line(
+            if pretty { "  final_mse" } else { "final_mse" },
+            format_number(diagnostics.final_mse),
+        ));
+    }
+
+    lines.join("\n")
+}
+
 pub fn run(
     args: RegisterArgs,
     progress: impl Fn(f64, &str),
@@ -955,12 +1010,7 @@ pub fn run(
     let pretty = args.pretty;
     let output = run_and_collect(args, progress)?;
 
-    let json = if pretty {
-        serde_json::to_string_pretty(&output)?
-    } else {
-        serde_json::to_string(&output)?
-    };
-    println!("{}", json);
+    println!("{}", format_register_summary(&output, pretty));
     Ok(())
 }
 
@@ -994,5 +1044,31 @@ mod tests {
     fn estimate_pattern_count_rejects_dense_square_lattice() {
         let count = estimate_pattern_count(256, 256, 8.0, 0.0, 8.0, PI / 2.0).expect("finite det");
         assert!(count > MAX_ESTIMATED_PATTERNS);
+    }
+
+    #[test]
+    fn register_summary_is_human_readable() {
+        let output = RegisterOutput {
+            shape: "square".to_string(),
+            a: 50.0,
+            alpha: 90.0,
+            b: 50.0,
+            beta: 0.0,
+            w: 48.0,
+            h: 48.0,
+            dx: 1.5,
+            dy: -2.5,
+            diagnostics: Some(RegisterDiagnostics {
+                detected_points: 10,
+                inlier_points: 8,
+                initial_mse: 1.25,
+                final_mse: 0.5,
+            }),
+        };
+
+        let summary = format_register_summary(&output, false);
+        assert!(summary.contains("shape: square"));
+        assert!(summary.contains("detected_points: 10"));
+        assert!(!summary.contains('{'));
     }
 }

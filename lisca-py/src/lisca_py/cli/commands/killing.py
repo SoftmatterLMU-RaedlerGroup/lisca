@@ -6,7 +6,7 @@ from typing import Annotated
 import typer
 
 from ...app.killing import run_killing_predict
-from ...common.progress import progress_json_stderr
+from ...common.progress import legacy_callback_adapter, progress_terminal_stderr
 
 
 def command(
@@ -16,5 +16,15 @@ def command(
     output: Annotated[Path, typer.Option("--output")],
     batch_size: Annotated[int, typer.Option("--batch-size")] = 256,
     cpu: Annotated[bool, typer.Option("--cpu")] = False,
+    no_progress: Annotated[bool, typer.Option("--no-progress")] = False,
 ) -> None:
-    run_killing_predict(workspace, pos, model, output, batch_size=batch_size, cpu=cpu, on_progress=progress_json_stderr)
+    sink = None if no_progress else progress_terminal_stderr()
+    run_killing_predict(
+        workspace,
+        pos,
+        model,
+        output,
+        batch_size=batch_size,
+        cpu=cpu,
+        on_progress=legacy_callback_adapter(sink),
+    )

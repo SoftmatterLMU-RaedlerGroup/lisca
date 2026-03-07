@@ -6,7 +6,7 @@ from typing import Annotated
 import typer
 
 from ...app.convert import run_convert
-from ...common.progress import progress_json_stderr
+from ...common.progress import legacy_callback_adapter, progress_terminal_stderr
 
 
 def command(
@@ -14,5 +14,7 @@ def command(
     pos: Annotated[str, typer.Option("--pos")],
     time: Annotated[str, typer.Option("--time")],
     output: Annotated[Path, typer.Option("--output")],
+    no_progress: Annotated[bool, typer.Option("--no-progress")] = False,
 ) -> None:
-    run_convert(input, pos, time, output, on_progress=progress_json_stderr)
+    sink = None if no_progress else progress_terminal_stderr()
+    run_convert(input, pos, time, output, on_progress=legacy_callback_adapter(sink))

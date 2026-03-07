@@ -12,6 +12,7 @@ use lisca_rs::cli::commands::{
     killing::KillingArgs,
     register::{GridShape, RegisterArgs},
 };
+use lisca_rs::common::progress as rs_progress;
 use lisca_rs::domain::schema;
 use lisca_rs::io::tiff::{read_tiff_frame, FrameData};
 use lisca_rs::io::zarr;
@@ -26,6 +27,7 @@ use uuid::Uuid;
 use zip::ZipArchive;
 
 const SETTINGS_DOWNLOAD_PROGRESS_CHANNEL: &str = "settings:download-assets-progress";
+const TASK_PROGRESS_CHANNEL: &str = "task-progress";
 const APP_SQLITE_FILE: &str = "lisca-desktop.sqlite";
 const MODEL_DOWNLOADS: [(&str, &str); 3] = [
     (
@@ -386,11 +388,13 @@ struct LoadPredictionPayload {
     pos: u32,
 }
 
-#[derive(Serialize, Deserialize, Clone, Default)]
-struct TaskProgressEvent {
-    progress: f64,
-    message: String,
-    timestamp: String,
+type TaskProgressEvent = rs_progress::ProgressEvent;
+
+#[derive(Serialize, Clone)]
+struct TaskProgressPayload {
+    #[serde(rename = "taskId")]
+    task_id: String,
+    event: TaskProgressEvent,
 }
 
 #[derive(Serialize, Deserialize, Clone, Default)]
@@ -1056,6 +1060,7 @@ fn tasks_insert(task: TaskRecord) -> bool {
     if task.created_at.is_empty() {
         task.created_at = chrono_now();
     }
+    task.progress_events = latest_task_progress_snapshot(task.progress_events);
     persist_task_record(&conn, &task).is_ok()
 }
 
@@ -1089,10 +1094,53 @@ fn tasks_update(id: String, updates: TaskUpdate) -> bool {
         task.logs = logs;
     }
     if let Some(progress_events) = updates.progress_events {
-        task.progress_events = progress_events;
+        task.progress_events = latest_task_progress_snapshot(progress_events);
     }
 
     persist_task_record(&conn, &task).is_ok()
+}
+
+fn task_progress_event(
+    kind: rs_progress::ProgressKind,
+    progress: f64,
+    message: impl Into<String>,
+) -> TaskProgressEvent {
+    let mut event = rs_progress::progress_event(progress, message);
+    event.kind = kind;
+    normalize_task_progress_event(event)
+}
+
+fn normalize_task_progress_event(mut event: TaskProgressEvent) -> TaskProgressEvent {
+    event.progress = event.progress.clamp(0.0, 1.0);
+    if event.timestamp.is_empty() {
+        event.timestamp = chrono_now();
+    }
+    event
+}
+
+fn latest_task_progress_snapshot(events: Vec<TaskProgressEvent>) -> Vec<TaskProgressEvent> {
+    events
+        .into_iter()
+        .last()
+        .map(normalize_task_progress_event)
+        .into_iter()
+        .collect()
+}
+
+fn emit_task_progress(
+    app: &AppHandle,
+    task_id: &str,
+    mut updates: TaskUpdate,
+    event: TaskProgressEvent,
+) {
+    let event = normalize_task_progress_event(event);
+    let payload = TaskProgressPayload {
+        task_id: task_id.to_string(),
+        event: event.clone(),
+    };
+    let _ = app.emit(TASK_PROGRESS_CHANNEL, payload);
+    updates.progress_events = Some(vec![event]);
+    let _ = update_task(task_id.to_string(), updates);
 }
 
 fn load_task_record(connection: &Connection, id: &str) -> Option<TaskRecord> {
@@ -1116,7 +1164,7 @@ fn load_task_record(connection: &Connection, id: &str) -> Option<TaskRecord> {
                     result: parse_json_field::<Option<Value>>(result_raw),
                     error: row.get(8)?,
                     logs: parse_json_field::<Vec<String>>(Some(logs_raw)),
-                    progress_events: parse_json_field::<Vec<TaskProgressEvent>>(Some(progress_raw)),
+                    progress_events: latest_task_progress_snapshot(parse_json_field::<Vec<TaskProgressEvent>>(Some(progress_raw))),
                 })
             },
         )
@@ -1126,8 +1174,9 @@ fn load_task_record(connection: &Connection, id: &str) -> Option<TaskRecord> {
 fn persist_task_record(connection: &Connection, task: &TaskRecord) -> Result<(), String> {
     let request_json = serde_json::to_string(&task.request).map_err(|error| error.to_string())?;
     let logs_json = serde_json::to_string(&task.logs).map_err(|error| error.to_string())?;
+    let progress_events = latest_task_progress_snapshot(task.progress_events.clone());
     let progress_json =
-        serde_json::to_string(&task.progress_events).map_err(|error| error.to_string())?;
+        serde_json::to_string(&progress_events).map_err(|error| error.to_string())?;
     let result_json = task
         .result
         .as_ref()
@@ -1187,7 +1236,9 @@ fn tasks_list() -> Vec<TaskRecord> {
             result: parse_json_field::<Option<Value>>(result_raw),
             error: row.get(8)?,
             logs: parse_json_field::<Vec<String>>(Some(logs_raw)),
-            progress_events: parse_json_field::<Vec<TaskProgressEvent>>(Some(progress_raw)),
+            progress_events: latest_task_progress_snapshot(parse_json_field::<
+                Vec<TaskProgressEvent>,
+            >(Some(progress_raw))),
         })
     }) {
         Ok(values) => values,
@@ -1210,85 +1261,163 @@ fn tasks_delete_completed() -> usize {
 }
 
 #[tauri::command]
-fn tasks_run_register_auto_detect(payload: TaskRunRegisterAutoPayload) -> Value {
+fn tasks_run_register_auto_detect(app: AppHandle, payload: TaskRunRegisterAutoPayload) -> Value {
     let started_at = chrono_now();
-    let mut progress_events = vec![TaskProgressEvent {
-        progress: 0.0,
-        message: "Running auto-detect".to_string(),
-        timestamp: started_at.clone(),
-    }];
-    let _ = update_task(
-        payload.task_id.clone(),
+    emit_task_progress(
+        &app,
+        &payload.task_id,
         TaskUpdate {
             status: Some("running".to_string()),
-            started_at: Some(started_at.clone()),
+            started_at: Some(started_at),
             finished_at: None,
             result: None,
             error: None,
             logs: None,
-            progress_events: Some(progress_events.clone()),
+            progress_events: None,
         },
+        task_progress_event(rs_progress::ProgressKind::Start, 0.0, "Running auto-detect"),
     );
 
-    let result = register_auto_detect(RegisterAutoDetectPayload {
-        folder: payload.folder,
+    let Some(grid) = parse_grid_shape(&payload.grid) else {
+        let error = "invalid grid".to_string();
+        let finished_at = chrono_now();
+        emit_task_progress(
+            &app,
+            &payload.task_id,
+            TaskUpdate {
+                status: Some("failed".to_string()),
+                started_at: None,
+                finished_at: Some(finished_at),
+                result: None,
+                error: Some(error.clone()),
+                logs: None,
+                progress_events: None,
+            },
+            task_progress_event(
+                rs_progress::ProgressKind::Error,
+                0.0,
+                format!("Auto-detect failed: {error}"),
+            ),
+        );
+        return json!({"ok": false, "error": error, "code": "invalid_payload"});
+    };
+
+    let args = RegisterArgs {
+        input: payload.folder.clone(),
         pos: payload.pos,
         channel: payload.channel,
         time: payload.time,
         z: payload.z,
-        grid: payload.grid,
+        grid,
         w: payload.w,
         h: payload.h,
-    });
-    let finished_at = chrono_now();
-    let (status, error, task_result) = if result.get("ok").and_then(Value::as_bool).unwrap_or(false)
-    {
-        (
-            "succeeded".to_string(),
-            None,
-            Some(json!({
-                "params": result.get("params").cloned().unwrap_or_else(|| json!({})),
-                "diagnostics": result.get("diagnostics").cloned().unwrap_or(Value::Null),
-            })),
-        )
-    } else {
-        (
-            "failed".to_string(),
+        local_var_radius: 5,
+        morph_radius: 2,
+        peak_merge_radius: 10,
+        peak_min_abs: 3.0,
+        peak_min_ratio: 0.1,
+        peak_drop_max_frac: 0.3,
+        peak_cv_threshold: 0.2,
+        inlier_frac: 0.95,
+        refine_iters: 50,
+        diagnostics: true,
+        pretty: false,
+        no_progress: false,
+    };
+
+    let progress_app = app.clone();
+    let progress_task_id = payload.task_id.clone();
+    let progress_sink = move |event: rs_progress::ProgressEvent| {
+        emit_task_progress(
+            &progress_app,
+            &progress_task_id,
+            TaskUpdate {
+                status: None,
+                started_at: None,
+                finished_at: None,
+                result: None,
+                error: None,
+                logs: None,
+                progress_events: None,
+            },
+            event,
+        );
+    };
+
+    match register_app::run_and_collect(args, rs_progress::legacy_adapter(&progress_sink)) {
+        Ok(output) => {
+            let finished_at = chrono_now();
+            let result = json!({
+                "ok": true,
+                "params": {
+                    "shape": output.shape,
+                    "a": output.a,
+                    "alpha": output.alpha,
+                    "b": output.b,
+                    "beta": output.beta,
+                    "w": output.w,
+                    "h": output.h,
+                    "dx": output.dx,
+                    "dy": output.dy,
+                },
+                "diagnostics": output.diagnostics.as_ref().map(|diagnostics| json!({
+                    "detected_points": diagnostics.detected_points,
+                    "inlier_points": diagnostics.inlier_points,
+                    "initial_mse": diagnostics.initial_mse,
+                    "final_mse": diagnostics.final_mse,
+                })),
+            });
+            emit_task_progress(
+                &app,
+                &payload.task_id,
+                TaskUpdate {
+                    status: Some("succeeded".to_string()),
+                    started_at: None,
+                    finished_at: Some(finished_at),
+                    result: Some(json!({
+                        "params": result.get("params").cloned().unwrap_or_else(|| json!({})),
+                        "diagnostics": result.get("diagnostics").cloned().unwrap_or(Value::Null),
+                    })),
+                    error: None,
+                    logs: None,
+                    progress_events: None,
+                },
+                task_progress_event(
+                    rs_progress::ProgressKind::Finish,
+                    1.0,
+                    "Auto-detect completed",
+                ),
+            );
             result
-                .get("error")
-                .and_then(Value::as_str)
-                .map(str::to_string),
-            None,
-        )
-    };
-    let message = if status == "succeeded" {
-        "Auto-detect completed".to_string()
-    } else {
-        let reason = error.as_deref().unwrap_or("Auto-detect failed");
-        format!("Auto-detect failed: {reason}")
-    };
-    progress_events.push(TaskProgressEvent {
-        progress: if status == "succeeded" { 1.0 } else { 0.0 },
-        message,
-        timestamp: finished_at.clone(),
-    });
-    let _ = update_task(
-        payload.task_id,
-        TaskUpdate {
-            status: Some(status),
-            started_at: None,
-            finished_at: Some(finished_at),
-            result: task_result,
-            error,
-            logs: None,
-            progress_events: Some(progress_events),
-        },
-    );
-    result
+        }
+        Err(error) => {
+            let finished_at = chrono_now();
+            let error = error.to_string();
+            emit_task_progress(
+                &app,
+                &payload.task_id,
+                TaskUpdate {
+                    status: Some("failed".to_string()),
+                    started_at: None,
+                    finished_at: Some(finished_at),
+                    result: None,
+                    error: Some(error.clone()),
+                    logs: None,
+                    progress_events: None,
+                },
+                task_progress_event(
+                    rs_progress::ProgressKind::Error,
+                    0.0,
+                    format!("Auto-detect failed: {error}"),
+                ),
+            );
+            json!({"ok": false, "error": error, "code": "exec_error"})
+        }
+    }
 }
 
 #[tauri::command]
-fn tasks_run_crop(payload: TaskRunCropPayload) -> Value {
+fn tasks_run_crop(app: AppHandle, payload: TaskRunCropPayload) -> Value {
     let started_at = chrono_now();
     let folder = payload.folder;
     let bbox = match resolve_bbox_csv(Path::new(&folder), payload.pos) {
@@ -1307,84 +1436,95 @@ fn tasks_run_crop(payload: TaskRunCropPayload) -> Value {
         bbox: bbox.to_string_lossy().to_string(),
         output: folder.clone(),
         background: payload.background,
+        no_progress: false,
     };
 
-    let mut progress_events = vec![TaskProgressEvent {
-        progress: 0.0,
-        message: "Running crop".to_string(),
-        timestamp: started_at.clone(),
-    }];
-    let _ = update_task(
-        payload.task_id.clone(),
+    emit_task_progress(
+        &app,
+        &payload.task_id,
         TaskUpdate {
             status: Some("running".to_string()),
-            started_at: Some(started_at.clone()),
+            started_at: Some(started_at),
             finished_at: None,
             result: None,
             error: None,
             logs: None,
-            progress_events: Some(progress_events.clone()),
+            progress_events: None,
         },
+        task_progress_event(rs_progress::ProgressKind::Start, 0.0, "Running crop"),
     );
 
-    let result = match crop_app::run(args, |_p, _m| {}) {
+    let progress_app = app.clone();
+    let progress_task_id = payload.task_id.clone();
+    let progress_sink = move |event: rs_progress::ProgressEvent| {
+        emit_task_progress(
+            &progress_app,
+            &progress_task_id,
+            TaskUpdate {
+                status: None,
+                started_at: None,
+                finished_at: None,
+                result: None,
+                error: None,
+                logs: None,
+                progress_events: None,
+            },
+            event,
+        );
+    };
+
+    match crop_app::run(args, rs_progress::legacy_adapter(&progress_sink)) {
         Ok(_) => {
-            progress_events.push(TaskProgressEvent {
-                progress: 1.0,
-                message: "Crop completed".to_string(),
-                timestamp: chrono_now(),
-            });
+            let finished_at = chrono_now();
+            emit_task_progress(
+                &app,
+                &payload.task_id,
+                TaskUpdate {
+                    status: Some("succeeded".to_string()),
+                    started_at: None,
+                    finished_at: Some(finished_at),
+                    result: Some(json!({
+                        "output": folder.clone(),
+                    })),
+                    error: None,
+                    logs: None,
+                    progress_events: None,
+                },
+                task_progress_event(rs_progress::ProgressKind::Finish, 1.0, "Crop completed"),
+            );
             json!({
                 "ok": true,
                 "output": folder,
             })
         }
         Err(error) => {
-            progress_events.push(TaskProgressEvent {
-                progress: 0.0,
-                message: format!("Crop failed: {error}"),
-                timestamp: chrono_now(),
-            });
-            json!({"ok": false, "error": error.to_string(), "code": "exec_error"})
+            let finished_at = chrono_now();
+            let error = error.to_string();
+            emit_task_progress(
+                &app,
+                &payload.task_id,
+                TaskUpdate {
+                    status: Some("failed".to_string()),
+                    started_at: None,
+                    finished_at: Some(finished_at),
+                    result: None,
+                    error: Some(error.clone()),
+                    logs: None,
+                    progress_events: None,
+                },
+                task_progress_event(
+                    rs_progress::ProgressKind::Error,
+                    0.0,
+                    format!("Crop failed: {error}"),
+                ),
+            );
+            json!({"ok": false, "error": error, "code": "exec_error"})
         }
-    };
-    let finished_at = chrono_now();
-    let (status, error, task_result) = if result.get("ok").and_then(Value::as_bool).unwrap_or(false)
-    {
-        (
-            "succeeded".to_string(),
-            None,
-            Some(json!({
-                "output": result.get("output").and_then(Value::as_str).unwrap_or_default().to_string(),
-            })),
-        )
-    } else {
-        (
-            "failed".to_string(),
-            result
-                .get("error")
-                .and_then(Value::as_str)
-                .map(str::to_string),
-            None,
-        )
-    };
-    let _ = update_task(
-        payload.task_id,
-        TaskUpdate {
-            status: Some(status),
-            started_at: None,
-            finished_at: Some(finished_at),
-            result: task_result,
-            error,
-            logs: None,
-            progress_events: Some(progress_events),
-        },
-    );
-    result
+    }
 }
 
 #[tauri::command]
-fn tasks_run_killing_predict(payload: TaskRunKillingPayload) -> Value {
+fn tasks_run_killing_predict(app: AppHandle, payload: TaskRunKillingPayload) -> Value {
     let started_at = chrono_now();
     let model_path = resolve_default_model_dir().join("model.onnx");
     if !model_path.exists() {
@@ -1399,15 +1539,12 @@ fn tasks_run_killing_predict(payload: TaskRunKillingPayload) -> Value {
         output: output.to_string_lossy().to_string(),
         batch_size: payload.batch_size.unwrap_or(256),
         cpu: payload.cpu.unwrap_or(false),
+        no_progress: false,
     };
 
-    let mut progress_events = vec![TaskProgressEvent {
-        progress: 0.0,
-        message: "Running killing inference".to_string(),
-        timestamp: started_at.clone(),
-    }];
-    let _ = update_task(
-        payload.task_id.clone(),
+    emit_task_progress(
+        &app,
+        &payload.task_id,
         TaskUpdate {
             status: Some("running".to_string()),
             started_at: Some(started_at),
@@ -1415,18 +1552,59 @@ fn tasks_run_killing_predict(payload: TaskRunKillingPayload) -> Value {
             result: None,
             error: None,
             logs: None,
-            progress_events: Some(progress_events.clone()),
+            progress_events: None,
         },
+        task_progress_event(
+            rs_progress::ProgressKind::Start,
+            0.0,
+            "Running killing inference",
+        ),
     );
 
-    let result = match killing_app::run(args, |_p, _m| {}) {
+    let progress_app = app.clone();
+    let progress_task_id = payload.task_id.clone();
+    let progress_sink = move |event: rs_progress::ProgressEvent| {
+        emit_task_progress(
+            &progress_app,
+            &progress_task_id,
+            TaskUpdate {
+                status: None,
+                started_at: None,
+                finished_at: None,
+                result: None,
+                error: None,
+                logs: None,
+                progress_events: None,
+            },
+            event,
+        );
+    };
+
+    match killing_app::run(args, rs_progress::legacy_adapter(&progress_sink)) {
         Ok(_) => match parse_prediction_csv(&output) {
             Ok(rows) => {
-                progress_events.push(TaskProgressEvent {
-                    progress: 1.0,
-                    message: "Killing inference completed".to_string(),
-                    timestamp: chrono_now(),
-                });
+                let finished_at = chrono_now();
+                emit_task_progress(
+                    &app,
+                    &payload.task_id,
+                    TaskUpdate {
+                        status: Some("succeeded".to_string()),
+                        started_at: None,
+                        finished_at: Some(finished_at),
+                        result: Some(json!({
+                            "output": output.to_string_lossy(),
+                            "rows": rows.clone(),
+                        })),
+                        error: None,
+                        logs: None,
+                        progress_events: None,
+                    },
+                    task_progress_event(
+                        rs_progress::ProgressKind::Finish,
+                        1.0,
+                        "Killing inference completed",
+                    ),
+                );
                 json!({
                     "ok": true,
                     "output": output.to_string_lossy(),
@@ -1434,57 +1612,52 @@ fn tasks_run_killing_predict(payload: TaskRunKillingPayload) -> Value {
                 })
             }
             Err(error) => {
-                progress_events.push(TaskProgressEvent {
-                    progress: 0.0,
-                    message: format!("Killing inference failed: {error}"),
-                    timestamp: chrono_now(),
-                });
+                let finished_at = chrono_now();
+                emit_task_progress(
+                    &app,
+                    &payload.task_id,
+                    TaskUpdate {
+                        status: Some("failed".to_string()),
+                        started_at: None,
+                        finished_at: Some(finished_at),
+                        result: None,
+                        error: Some(error.clone()),
+                        logs: None,
+                        progress_events: None,
+                    },
+                    task_progress_event(
+                        rs_progress::ProgressKind::Error,
+                        0.0,
+                        format!("Killing inference failed: {error}"),
+                    ),
+                );
                 json!({"ok": false, "error": error, "code": "invalid_payload"})
             }
         },
         Err(error) => {
-            progress_events.push(TaskProgressEvent {
-                progress: 0.0,
-                message: format!("Killing inference failed: {error}"),
-                timestamp: chrono_now(),
-            });
-            json!({"ok": false, "error": error.to_string(), "code": "exec_error"})
+            let finished_at = chrono_now();
+            let error = error.to_string();
+            emit_task_progress(
+                &app,
+                &payload.task_id,
+                TaskUpdate {
+                    status: Some("failed".to_string()),
+                    started_at: None,
+                    finished_at: Some(finished_at),
+                    result: None,
+                    error: Some(error.clone()),
+                    logs: None,
+                    progress_events: None,
+                },
+                task_progress_event(
+                    rs_progress::ProgressKind::Error,
+                    0.0,
+                    format!("Killing inference failed: {error}"),
+                ),
+            );
+            json!({"ok": false, "error": error, "code": "exec_error"})
         }
-    };
-    let finished_at = chrono_now();
-    let (status, error, task_result) = if result.get("ok").and_then(Value::as_bool).unwrap_or(false)
-    {
-        (
-            "succeeded".to_string(),
-            None,
-            Some(json!({
-                "output": result.get("output").and_then(Value::as_str).unwrap_or_default().to_string(),
-                "rows": result.get("rows").cloned().unwrap_or_else(|| json!([])),
-            })),
-        )
-    } else {
-        (
-            "failed".to_string(),
-            result
-                .get("error")
-                .and_then(Value::as_str)
-                .map(str::to_string),
-            None,
-        )
-    };
-    let _ = update_task(
-        payload.task_id,
-        TaskUpdate {
-            status: Some(status),
-            started_at: None,
-            finished_at: Some(finished_at),
-            result: task_result,
-            error,
-            logs: None,
-            progress_events: Some(progress_events),
-        },
-    );
-    result
+    }
 }
 
 #[tauri::command]
@@ -1774,9 +1947,8 @@ fn parse_tiff_filename(name: &str) -> Option<(u32, u32, u32, u32)> {
         _ => return None,
     };
 
-    let parse_axis = |value: &str, prefix: &str| -> Option<u32> {
-        value.strip_prefix(prefix)?.parse().ok()
-    };
+    let parse_axis =
+        |value: &str, prefix: &str| -> Option<u32> { value.strip_prefix(prefix)?.parse().ok() };
 
     let channel = if channel_part.starts_with("img_channel") {
         parse_axis(channel_part, "img_channel")
@@ -2096,6 +2268,9 @@ fn resolve_registration_yaml(folder: &Path, pos: u32) -> Option<PathBuf> {
 }
 
 fn app_state_dir() -> PathBuf {
+    if let Some(path) = env::var_os("LISCA_DESKTOP_STATE_DIR") {
+        return PathBuf::from(path);
+    }
     dirs::config_dir()
         .or_else(dirs::data_dir)
         .or_else(dirs::cache_dir)
@@ -2198,6 +2373,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rusqlite::Connection;
 
     struct TempTestDir {
         path: PathBuf,
@@ -2350,5 +2526,76 @@ mod tests {
     fn parse_tiff_filename_accepts_img_prefix_segments() {
         let parsed = parse_tiff_filename("img_channel000-position140-time000000001-z000.tif");
         assert_eq!(parsed, Some((0, 140, 1, 0)));
+    }
+
+    #[test]
+    fn latest_task_progress_snapshot_keeps_only_latest_event() {
+        let snapshot = latest_task_progress_snapshot(vec![
+            task_progress_event(rs_progress::ProgressKind::Start, 0.0, "Starting"),
+            task_progress_event(rs_progress::ProgressKind::Update, 0.5, "Halfway"),
+        ]);
+
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0].kind, rs_progress::ProgressKind::Update);
+        assert_eq!(snapshot[0].message, "Halfway");
+    }
+
+    #[test]
+    fn persist_task_record_stores_only_latest_progress_snapshot() {
+        let connection = Connection::open_in_memory().expect("open in-memory sqlite");
+        connection
+            .execute_batch(
+                "
+                CREATE TABLE tasks (
+                    id TEXT PRIMARY KEY,
+                    kind TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    started_at TEXT,
+                    finished_at TEXT,
+                    request_json TEXT NOT NULL,
+                    result_json TEXT,
+                    error TEXT,
+                    logs_json TEXT NOT NULL,
+                    progress_events_json TEXT NOT NULL
+                );
+                ",
+            )
+            .expect("create tasks table");
+
+        let task = TaskRecord {
+            id: "task-1".to_string(),
+            kind: "file.crop".to_string(),
+            status: "running".to_string(),
+            created_at: chrono_now(),
+            started_at: None,
+            finished_at: None,
+            request: json!({"pos": 1}),
+            result: None,
+            error: None,
+            logs: Vec::new(),
+            progress_events: vec![
+                task_progress_event(rs_progress::ProgressKind::Start, 0.0, "Starting"),
+                task_progress_event(rs_progress::ProgressKind::Update, 0.75, "Reading frames"),
+            ],
+        };
+
+        persist_task_record(&connection, &task).expect("persist task");
+
+        let raw: String = connection
+            .query_row(
+                "SELECT progress_events_json FROM tasks WHERE id = ?1",
+                params![task.id],
+                |row| row.get(0),
+            )
+            .expect("read progress snapshot");
+        let stored: Vec<TaskProgressEvent> =
+            serde_json::from_str(&raw).expect("deserialize progress snapshot");
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].message, "Reading frames");
+
+        let loaded = load_task_record(&connection, "task-1").expect("load task");
+        assert_eq!(loaded.progress_events.len(), 1);
+        assert_eq!(loaded.progress_events[0].progress, 0.75);
     }
 }

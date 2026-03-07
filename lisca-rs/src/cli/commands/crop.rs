@@ -13,4 +13,6 @@ pub struct CropArgs {
     pub output: String,
     #[arg(long, default_value_t = false)]
     pub background: bool,
+    #[arg(long, default_value_t = false)]
+    pub no_progress: bool,
 }

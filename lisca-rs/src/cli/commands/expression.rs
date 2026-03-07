@@ -11,4 +11,6 @@ pub struct ExpressionArgs {
     pub channel: u32,
     #[arg(long)]
     pub output: String,
+    #[arg(long, default_value_t = false)]
+    pub no_progress: bool,
 }

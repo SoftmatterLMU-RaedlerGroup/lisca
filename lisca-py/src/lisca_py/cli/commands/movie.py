@@ -6,7 +6,7 @@ from typing import Annotated
 import typer
 
 from ...app.movie import run_movie
-from ...common.progress import progress_json_stderr
+from ...common.progress import legacy_callback_adapter, progress_terminal_stderr
 
 
 def command(
@@ -19,5 +19,18 @@ def command(
     fps: Annotated[int, typer.Option("--fps")] = 10,
     colormap: Annotated[str, typer.Option("--colormap")] = "grayscale",
     spots: Annotated[Path | None, typer.Option("--spots", exists=True, dir_okay=False)] = None,
+    no_progress: Annotated[bool, typer.Option("--no-progress")] = False,
 ) -> None:
-    run_movie(workspace, pos, roi, channel, time, output, fps, colormap, spots, on_progress=progress_json_stderr)
+    sink = None if no_progress else progress_terminal_stderr()
+    run_movie(
+        workspace,
+        pos,
+        roi,
+        channel,
+        time,
+        output,
+        fps,
+        colormap,
+        spots,
+        on_progress=legacy_callback_adapter(sink),
+    )

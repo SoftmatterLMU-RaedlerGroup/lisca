@@ -11,4 +11,6 @@ pub struct ConvertArgs {
     pub time: String,
     #[arg(long)]
     pub output: String,
+    #[arg(long, default_value_t = false)]
+    pub no_progress: bool,
 }

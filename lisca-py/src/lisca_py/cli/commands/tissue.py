@@ -6,7 +6,7 @@ from typing import Annotated
 import typer
 
 from ...app.tissue import run_tissue
-from ...common.progress import progress_json_stderr
+from ...common.progress import legacy_callback_adapter, progress_terminal_stderr
 
 
 def command(
@@ -18,7 +18,9 @@ def command(
     model: Annotated[str, typer.Option("--model")],
     output: Annotated[Path, typer.Option("--output")],
     masks: Annotated[Path | None, typer.Option("--masks")] = None,
+    no_progress: Annotated[bool, typer.Option("--no-progress")] = False,
 ) -> None:
+    sink = None if no_progress else progress_terminal_stderr()
     run_tissue(
         workspace,
         pos,
@@ -28,5 +30,5 @@ def command(
         model,
         output,
         masks,
-        on_progress=progress_json_stderr,
+        on_progress=legacy_callback_adapter(sink),
     )

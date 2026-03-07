@@ -21,4 +21,6 @@ pub struct MovieArgs {
     pub colormap: String,
     #[arg(long)]
     pub spots: Option<String>,
+    #[arg(long, default_value_t = false)]
+    pub no_progress: bool,
 }
