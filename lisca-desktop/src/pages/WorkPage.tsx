@@ -20,7 +20,13 @@ import {
 import { parseSliceStringOverValues } from "@/lib/slices";
 import { cn } from "@/lib/utils";
 import { loadRegisterPersistEntry, saveRegisterPersistEntry } from "@/register/persist";
-import type { AssayListItem, AssayYaml, FolderScan, TaskRecord } from "@/lib/types";
+import type {
+  AssayListItem,
+  AssayYaml,
+  FolderScan,
+  ReadImageResponse,
+  TaskRecord,
+} from "@/lib/types";
 
 interface ImageFrame {
   width: number;
@@ -569,6 +575,8 @@ export default function WorkPage() {
 
     const run = async () => {
       if (!assay) return;
+      if (!scan) return;
+
       const request = {
         folder: assay.folder,
         pos: selectedPos,
@@ -576,13 +584,19 @@ export default function WorkPage() {
         time: selectedTime,
         z: selectedZ,
       };
-      const response = await api.register.readImage({
+      const readImage = async (
+        channel: number,
+        time: number,
+        z: number,
+      ): Promise<ReadImageResponse> => api.register.readImage({
         folder: request.folder,
         pos: request.pos,
-        channel: request.channel,
-        time: request.time,
-        z: request.z,
+        channel,
+        time,
+        z,
       });
+
+      let response = await readImage(request.channel, request.time, request.z);
       if (cancelled) return;
       if (response.ok) {
         setModelImageSize((prev) => {
@@ -600,6 +614,39 @@ export default function WorkPage() {
         });
         return;
       }
+
+      for (const channel of scan.channels) {
+        for (const time of scan.times) {
+          for (const z of scan.zSlices) {
+            if (channel === request.channel && time === request.time && z === request.z) {
+              continue;
+            }
+            const candidate = await readImage(channel, time, z);
+            if (candidate.ok) {
+              if (!cancelled) {
+                if (channel !== selectedChannel) setSelectedChannel(channel);
+                if (time !== selectedTime) setSelectedTime(time);
+                if (z !== selectedZ) setSelectedZ(z);
+                setModelImageSize((prev) => {
+                  if (!prev) return { width: candidate.width, height: candidate.height };
+                  return {
+                    width: Math.max(prev.width, candidate.width),
+                    height: Math.max(prev.height, candidate.height),
+                  };
+                });
+                setError(null);
+                setImage({
+                  width: candidate.width,
+                  height: candidate.height,
+                  rgba: new Uint8ClampedArray(candidate.rgba.slice(0)),
+                });
+              }
+              return;
+            }
+          }
+        }
+      }
+
       setImage(null);
       setError(response.error || "Failed to load image.");
     };
@@ -1530,10 +1577,9 @@ export default function WorkPage() {
                   times={scan?.times ?? []}
                   selectedTime={selectedTime}
                   onSelectTime={setSelectedTime}
-                  channels={scan?.channels ?? []}
                   selectedChannel={selectedChannel}
-                  zSlices={scan?.zSlices ?? []}
                   selectedZ={selectedZ}
+                  classificationOptions={assayYaml?.annotations?.classification_options ?? []}
                 />
               ) : (
                 <AnalyzeTab

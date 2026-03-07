@@ -19,15 +19,44 @@ BG_AXIS_NAMES = ["t", "c", "z"]
 
 
 def raw_chunks(shape: tuple[int, int, int, int, int]) -> tuple[int, int, int, int, int]:
-    t, c, _z, y, x = shape
-    return (min(16, t), min(c, 2), 1, min(256, y), min(256, x))
+    _t, _c, _z, y, x = shape
+    return (1, 1, 1, y, x)
+
+
+def raw_shards(shape: tuple[int, int, int, int, int]) -> tuple[int, int, int, int, int] | None:
+    t, c, z, y, x = shape
+    shards = (min(64, t), c, z, y, x)
+    return None if shards == raw_chunks(shape) else shards
 
 
 def seg_chunks(shape: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
-    t, _z, y, x = shape
-    return (min(16, t), 1, min(256, y), min(256, x))
+    _t, z, y, x = shape
+    return (1, z, y, x)
+
+
+def seg_shards(shape: tuple[int, int, int, int]) -> tuple[int, int, int, int] | None:
+    t, z, y, x = shape
+    shards = (min(64, t), z, y, x)
+    return None if shards == seg_chunks(shape) else shards
+
+
+def mask_chunks(shape: tuple[int, int, int]) -> tuple[int, int, int]:
+    _t, y, x = shape
+    return (1, y, x)
+
+
+def mask_shards(shape: tuple[int, int, int]) -> tuple[int, int, int] | None:
+    t, y, x = shape
+    shards = (min(64, t), y, x)
+    return None if shards == mask_chunks(shape) else shards
 
 
 def bg_chunks(shape: tuple[int, int, int]) -> tuple[int, int, int]:
+    _t, _c, _z = shape
+    return (1, 1, 1)
+
+
+def bg_shards(shape: tuple[int, int, int]) -> tuple[int, int, int] | None:
     t, c, z = shape
-    return (min(64, t), c, z)
+    shards = (min(256, t), c, z)
+    return None if shards == bg_chunks(shape) else shards

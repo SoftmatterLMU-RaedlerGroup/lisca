@@ -14,6 +14,7 @@ export const DEFAULT_REGISTER = {
 };
 
 export function normalizeAssayYaml(input: Partial<AssayYaml>): AssayYaml {
+  const classificationOptions = normalizeStringList(input.annotations?.classification_options);
   return {
     version: 1,
     name: String(input.name ?? "").trim(),
@@ -35,6 +36,13 @@ export function normalizeAssayYaml(input: Partial<AssayYaml>): AssayYaml {
           }))
           .filter((entry) => entry.channel >= 0 && entry.name.length > 0)
       : [],
+    ...(classificationOptions.length > 0
+      ? {
+          annotations: {
+            classification_options: classificationOptions,
+          },
+        }
+      : {}),
     samples: Array.isArray(input.samples)
       ? input.samples
           .map((sample) => ({
@@ -59,6 +67,20 @@ export function normalizeAssayYaml(input: Partial<AssayYaml>): AssayYaml {
 
 function finiteOrDefault(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function normalizeStringList(values: unknown): string[] {
+  if (!Array.isArray(values)) return [];
+
+  const seen = new Set<string>();
+  const next: string[] = [];
+  for (const rawValue of values) {
+    const value = String(rawValue ?? "").trim();
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    next.push(value);
+  }
+  return next;
 }
 
 export function parseAssayYaml(text: string): AssayYaml {

@@ -7,24 +7,31 @@ use std::path::{Path, PathBuf};
 use lisca_rs::app::crop as crop_app;
 use lisca_rs::app::killing as killing_app;
 use lisca_rs::app::register as register_app;
-use lisca_rs::cli::commands::{crop::CropArgs, killing::KillingArgs, register::{GridShape, RegisterArgs}};
+use lisca_rs::cli::commands::{
+    crop::CropArgs,
+    killing::KillingArgs,
+    register::{GridShape, RegisterArgs},
+};
 use lisca_rs::domain::schema;
 use lisca_rs::io::tiff::{read_tiff_frame, FrameData};
 use lisca_rs::io::zarr;
 use reqwest::blocking;
 use rfd::FileDialog;
-use serde::{Deserialize, Serialize};
+use rusqlite::{params, Connection};
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use serde_json::{self, json, Value};
 use tauri::{AppHandle, Emitter};
 use uuid::Uuid;
-use rusqlite::{params, Connection};
 use zip::ZipArchive;
 
 const SETTINGS_DOWNLOAD_PROGRESS_CHANNEL: &str = "settings:download-assets-progress";
 const APP_SQLITE_FILE: &str = "lisca-desktop.sqlite";
 const MODEL_DOWNLOADS: [(&str, &str); 3] = [
-    ("model.onnx", "https://huggingface.co/keejkrej/resnet18/resolve/main/model.onnx"),
+    (
+        "model.onnx",
+        "https://huggingface.co/keejkrej/resnet18/resolve/main/model.onnx",
+    ),
     (
         "config.json",
         "https://huggingface.co/keejkrej/resnet18/resolve/main/config.json",
@@ -49,7 +56,6 @@ struct AssayRecord {
     #[serde(default)]
     updated_at: String,
 }
-
 
 #[derive(Serialize)]
 struct AssayListItem {
@@ -165,6 +171,179 @@ struct RoiLoadFramePayload {
     t: u32,
     c: u32,
     z: u32,
+}
+
+#[derive(Deserialize)]
+struct AnnotationLoadPayload {
+    folder: String,
+    pos: u32,
+}
+
+#[derive(Deserialize)]
+struct AnnotationSavePayload {
+    folder: String,
+    pos: u32,
+    classifications: Vec<AnnotationClassificationRow>,
+    spots: Vec<AnnotationSpotRow>,
+    segmentations: Vec<AnnotationSegmentationRow>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+struct AnnotationClassificationRow {
+    roi: String,
+    t: u32,
+    c: u32,
+    z: u32,
+    #[serde(rename = "className")]
+    class_name: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+struct AnnotationSpotRow {
+    roi: String,
+    t: u32,
+    c: u32,
+    z: u32,
+    #[serde(rename = "spotIdx")]
+    spot_idx: u32,
+    x: f64,
+    y: f64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+struct AnnotationSegmentationRow {
+    roi: String,
+    t: u32,
+    c: u32,
+    z: u32,
+    #[serde(rename = "contourIdx")]
+    contour_idx: u32,
+    #[serde(rename = "nodeIdx")]
+    node_idx: u32,
+    x: f64,
+    y: f64,
+}
+
+#[derive(Serialize, Clone, Default, Debug, PartialEq)]
+struct AnnotationLoadResponse {
+    classifications: Vec<AnnotationClassificationRow>,
+    spots: Vec<AnnotationSpotRow>,
+    segmentations: Vec<AnnotationSegmentationRow>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct AnnotationClassificationCsvRow {
+    roi: String,
+    t: u32,
+    c: u32,
+    z: u32,
+    #[serde(rename = "class")]
+    class_name: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct AnnotationSpotCsvRow {
+    roi: String,
+    t: u32,
+    c: u32,
+    z: u32,
+    spot_idx: u32,
+    x: f64,
+    y: f64,
+}
+
+#[derive(Serialize, Deserialize)]
+struct AnnotationSegmentationCsvRow {
+    roi: String,
+    t: u32,
+    c: u32,
+    z: u32,
+    contour_idx: u32,
+    node_idx: u32,
+    x: f64,
+    y: f64,
+}
+
+impl From<AnnotationClassificationCsvRow> for AnnotationClassificationRow {
+    fn from(value: AnnotationClassificationCsvRow) -> Self {
+        Self {
+            roi: value.roi,
+            t: value.t,
+            c: value.c,
+            z: value.z,
+            class_name: value.class_name,
+        }
+    }
+}
+
+impl From<&AnnotationClassificationRow> for AnnotationClassificationCsvRow {
+    fn from(value: &AnnotationClassificationRow) -> Self {
+        Self {
+            roi: value.roi.clone(),
+            t: value.t,
+            c: value.c,
+            z: value.z,
+            class_name: value.class_name.clone(),
+        }
+    }
+}
+
+impl From<AnnotationSpotCsvRow> for AnnotationSpotRow {
+    fn from(value: AnnotationSpotCsvRow) -> Self {
+        Self {
+            roi: value.roi,
+            t: value.t,
+            c: value.c,
+            z: value.z,
+            spot_idx: value.spot_idx,
+            x: value.x,
+            y: value.y,
+        }
+    }
+}
+
+impl From<&AnnotationSpotRow> for AnnotationSpotCsvRow {
+    fn from(value: &AnnotationSpotRow) -> Self {
+        Self {
+            roi: value.roi.clone(),
+            t: value.t,
+            c: value.c,
+            z: value.z,
+            spot_idx: value.spot_idx,
+            x: value.x,
+            y: value.y,
+        }
+    }
+}
+
+impl From<AnnotationSegmentationCsvRow> for AnnotationSegmentationRow {
+    fn from(value: AnnotationSegmentationCsvRow) -> Self {
+        Self {
+            roi: value.roi,
+            t: value.t,
+            c: value.c,
+            z: value.z,
+            contour_idx: value.contour_idx,
+            node_idx: value.node_idx,
+            x: value.x,
+            y: value.y,
+        }
+    }
+}
+
+impl From<&AnnotationSegmentationRow> for AnnotationSegmentationCsvRow {
+    fn from(value: &AnnotationSegmentationRow) -> Self {
+        Self {
+            roi: value.roi.clone(),
+            t: value.t,
+            c: value.c,
+            z: value.z,
+            contour_idx: value.contour_idx,
+            node_idx: value.node_idx,
+            x: value.x,
+            y: value.y,
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -344,8 +523,7 @@ fn assays_remove(id: String) -> bool {
         Ok(connection) => connection,
         Err(_) => return false,
     };
-    conn
-        .execute("DELETE FROM assays WHERE id = ?1", params![id])
+    conn.execute("DELETE FROM assays WHERE id = ?1", params![id])
         .map(|removed| removed > 0)
         .unwrap_or_default()
 }
@@ -358,7 +536,10 @@ fn assays_upsert(payload: AssayUpsertPayload) -> Value {
     };
 
     let now = chrono_now();
-    let requested_id = payload.meta.id.unwrap_or_else(|| Uuid::new_v4().to_string());
+    let requested_id = payload
+        .meta
+        .id
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
     let requested_type = if payload.meta.assay_type == "expression" {
         "expression".to_string()
     } else {
@@ -434,9 +615,10 @@ fn assays_upsert(payload: AssayUpsertPayload) -> Value {
 
 #[tauri::command]
 fn assays_pick_data_folder() -> Option<Value> {
-    FileDialog::new().set_title("Select assay data folder").pick_folder().map(|path| {
-        json!({ "path": path.to_string_lossy() })
-    })
+    FileDialog::new()
+        .set_title("Select assay data folder")
+        .pick_folder()
+        .map(|path| json!({ "path": path.to_string_lossy() }))
 }
 
 #[tauri::command]
@@ -461,8 +643,8 @@ fn assays_pick_assay_yaml() -> Option<Value> {
 }
 
 #[tauri::command]
-fn assays_read_yaml(payload: RegisterScanPayload) -> Value {
-    let path = Path::new(&payload.folder).join("assay.yaml");
+fn assays_read_yaml(folder: String) -> Value {
+    let path = Path::new(&folder).join("assay.yaml");
     match fs::read_to_string(&path) {
         Ok(yaml) => json!({"ok": true, "yaml": yaml}),
         Err(error) => json!({"ok": false, "error": error.to_string()}),
@@ -535,7 +717,9 @@ fn register_scan(payload: RegisterScanPayload) -> FolderScan {
     fallback.z_slices = z_slices.into_iter().collect();
 
     for pos in &fallback.positions {
-        if resolve_registration_yaml(folder, *pos).is_some() || resolve_bbox_csv(folder, *pos).is_some() {
+        if resolve_registration_yaml(folder, *pos).is_some()
+            || resolve_bbox_csv(folder, *pos).is_some()
+        {
             fallback.registration_positions.push(*pos);
         }
         if folder.join(format!("Pos{}_roi.zarr", pos)).exists() {
@@ -689,9 +873,9 @@ fn register_save_bbox(payload: RegisterSaveBboxPayload) -> Value {
         } else {
             format!("{}\n", payload.csv)
         };
-        if let Err(error) = File::create(&bbox_path).and_then(|mut file| {
-            file.write_all(normalized_csv.as_bytes())
-        }) {
+        if let Err(error) =
+            File::create(&bbox_path).and_then(|mut file| file.write_all(normalized_csv.as_bytes()))
+        {
             return json!({"ok": false, "error": error.to_string()});
         }
     }
@@ -703,9 +887,9 @@ fn register_save_bbox(payload: RegisterSaveBboxPayload) -> Value {
             format!("{}\n", yaml)
         };
         for register_path in registration_yaml_paths(folder, payload.pos) {
-            if let Err(error) = File::create(&register_path).and_then(|mut file| {
-                file.write_all(normalized_yaml.as_bytes())
-            }) {
+            if let Err(error) = File::create(&register_path)
+                .and_then(|mut file| file.write_all(normalized_yaml.as_bytes()))
+            {
                 return json!({"ok": false, "error": error.to_string()});
             }
         }
@@ -746,7 +930,7 @@ fn roi_discover(payload: RoiDiscoverPayload) -> RoiDiscoverResponse {
             None => continue,
         };
 
-        let raw_path = format!("{}/raw", schema::raw_array_path(&crop_id));
+        let raw_path = schema::raw_array_path(&crop_id);
         let raw = match zarr::open_array(&store, &raw_path) {
             Ok(raw) => raw,
             Err(_) => continue,
@@ -772,7 +956,10 @@ fn roi_load_frame(payload: RoiLoadFramePayload) -> Value {
         }
     };
 
-    let pos_records: Vec<&TiffRecord> = records.iter().filter(|item| item.pos == payload.pos).collect();
+    let pos_records: Vec<&TiffRecord> = records
+        .iter()
+        .filter(|item| item.pos == payload.pos)
+        .collect();
     if pos_records.is_empty() {
         return json!({"ok": false, "error": "position not found"});
     }
@@ -790,9 +977,18 @@ fn roi_load_frame(payload: RoiLoadFramePayload) -> Value {
     let times: Vec<u32> = times.into_iter().collect();
     let zs: Vec<u32> = zs.into_iter().collect();
 
-    let ci = channels.iter().position(|value| *value == payload.c).map(|v| v as u64);
-    let ti = times.iter().position(|value| *value == payload.t).map(|v| v as u64);
-    let zi = zs.iter().position(|value| *value == payload.z).map(|v| v as u64);
+    let ci = channels
+        .iter()
+        .position(|value| *value == payload.c)
+        .map(|v| v as u64);
+    let ti = times
+        .iter()
+        .position(|value| *value == payload.t)
+        .map(|v| v as u64);
+    let zi = zs
+        .iter()
+        .position(|value| *value == payload.z)
+        .map(|v| v as u64);
 
     if ci.is_none() || ti.is_none() || zi.is_none() {
         return json!({"ok": false, "error": "Requested index not found"});
@@ -821,7 +1017,7 @@ fn roi_load_frame(payload: RoiLoadFramePayload) -> Value {
 
     let h = shape[3] as u32;
     let w = shape[4] as u32;
-    let data = match zarr::read_chunk_u16(&raw, &[t_i, c_i, z_i, 0, 0]) {
+    let data = match zarr::read_raw_frame_u16(&raw, t_i, c_i, z_i) {
         Ok(data) => data,
         Err(error) => return json!({"ok": false, "error": error.to_string()}),
     };
@@ -832,6 +1028,22 @@ fn roi_load_frame(payload: RoiLoadFramePayload) -> Value {
         "height": h,
         "data": data,
     })
+}
+
+#[tauri::command]
+fn annotations_load(payload: AnnotationLoadPayload) -> Result<AnnotationLoadResponse, String> {
+    load_annotation_bundle(Path::new(&payload.folder), payload.pos)
+}
+
+#[tauri::command]
+fn annotations_save(payload: AnnotationSavePayload) -> Result<bool, String> {
+    let bundle = AnnotationLoadResponse {
+        classifications: payload.classifications,
+        spots: payload.spots,
+        segmentations: payload.segmentations,
+    };
+    save_annotation_bundle(Path::new(&payload.folder), payload.pos, &bundle)?;
+    Ok(true)
 }
 
 #[tauri::command]
@@ -990,8 +1202,11 @@ fn tasks_delete_completed() -> usize {
         Ok(connection) => connection,
         Err(_) => return 0,
     };
-    conn.execute("DELETE FROM tasks WHERE status IN ('succeeded', 'failed')", [])
-        .unwrap_or(0) as usize
+    conn.execute(
+        "DELETE FROM tasks WHERE status IN ('succeeded', 'failed')",
+        [],
+    )
+    .unwrap_or(0) as usize
 }
 
 #[tauri::command]
@@ -1026,7 +1241,8 @@ fn tasks_run_register_auto_detect(payload: TaskRunRegisterAutoPayload) -> Value 
         h: payload.h,
     });
     let finished_at = chrono_now();
-    let (status, error, task_result) = if result.get("ok").and_then(Value::as_bool).unwrap_or(false) {
+    let (status, error, task_result) = if result.get("ok").and_then(Value::as_bool).unwrap_or(false)
+    {
         (
             "succeeded".to_string(),
             None,
@@ -1038,7 +1254,10 @@ fn tasks_run_register_auto_detect(payload: TaskRunRegisterAutoPayload) -> Value 
     } else {
         (
             "failed".to_string(),
-            result.get("error").and_then(Value::as_str).map(str::to_string),
+            result
+                .get("error")
+                .and_then(Value::as_str)
+                .map(str::to_string),
             None,
         )
     };
@@ -1130,7 +1349,8 @@ fn tasks_run_crop(payload: TaskRunCropPayload) -> Value {
         }
     };
     let finished_at = chrono_now();
-    let (status, error, task_result) = if result.get("ok").and_then(Value::as_bool).unwrap_or(false) {
+    let (status, error, task_result) = if result.get("ok").and_then(Value::as_bool).unwrap_or(false)
+    {
         (
             "succeeded".to_string(),
             None,
@@ -1141,7 +1361,10 @@ fn tasks_run_crop(payload: TaskRunCropPayload) -> Value {
     } else {
         (
             "failed".to_string(),
-            result.get("error").and_then(Value::as_str).map(str::to_string),
+            result
+                .get("error")
+                .and_then(Value::as_str)
+                .map(str::to_string),
             None,
         )
     };
@@ -1229,7 +1452,8 @@ fn tasks_run_killing_predict(payload: TaskRunKillingPayload) -> Value {
         }
     };
     let finished_at = chrono_now();
-    let (status, error, task_result) = if result.get("ok").and_then(Value::as_bool).unwrap_or(false) {
+    let (status, error, task_result) = if result.get("ok").and_then(Value::as_bool).unwrap_or(false)
+    {
         (
             "succeeded".to_string(),
             None,
@@ -1241,7 +1465,10 @@ fn tasks_run_killing_predict(payload: TaskRunKillingPayload) -> Value {
     } else {
         (
             "failed".to_string(),
-            result.get("error").and_then(Value::as_str).map(str::to_string),
+            result
+                .get("error")
+                .and_then(Value::as_str)
+                .map(str::to_string),
             None,
         )
     };
@@ -1271,7 +1498,9 @@ fn application_load_prediction_csv(payload: LoadPredictionPayload) -> Value {
 
 fn chrono_now() -> String {
     let now = std::time::SystemTime::now();
-    let elapsed = now.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+    let elapsed = now
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
     format!("{}.{:09}Z", elapsed.as_secs(), elapsed.subsec_nanos())
 }
 
@@ -1344,9 +1573,14 @@ fn download_default_assets() -> Result<Vec<String>, String> {
         return Ok(downloaded_files);
     }
 
-    let archive = env::temp_dir().join(format!("lisca-ffmpeg-{}.zip", chrono_now().replace(":", "-")));
+    let archive = env::temp_dir().join(format!(
+        "lisca-ffmpeg-{}.zip",
+        chrono_now().replace(":", "-")
+    ));
     download_file(FFMPEG_ZIP_URL, &archive)?;
-    let ffmpeg_parent = ffmpeg_path.parent().ok_or_else(|| "invalid ffmpeg path".to_string())?;
+    let ffmpeg_parent = ffmpeg_path
+        .parent()
+        .ok_or_else(|| "invalid ffmpeg path".to_string())?;
     fs::create_dir_all(ffmpeg_parent).map_err(|error| error.to_string())?;
     extract_ffmpeg_executable(&archive, &ffmpeg_path)?;
     downloaded_files.push(ffmpeg_path.to_string_lossy().to_string());
@@ -1450,11 +1684,15 @@ fn resolve_asset_status() -> AssetStatus {
     };
     if !status.model_path.exists() {
         status.all_present = false;
-        status.missing.push(status.model_path.to_string_lossy().to_string());
+        status
+            .missing
+            .push(status.model_path.to_string_lossy().to_string());
     }
     if !status.ffmpeg_path.exists() && cfg!(windows) {
         status.all_present = false;
-        status.missing.push(status.ffmpeg_path.to_string_lossy().to_string());
+        status
+            .missing
+            .push(status.ffmpeg_path.to_string_lossy().to_string());
     }
     status
 }
@@ -1528,14 +1766,27 @@ fn parse_tiff_filename(name: &str) -> Option<(u32, u32, u32, u32)> {
     } else {
         return None;
     };
-    let parts: Vec<&str> = stem.split('_').collect();
-    if parts.len() != 4 {
-        return None;
-    }
-    let channel: u32 = parts.first()?.strip_prefix("img_channel")?.parse().ok()?;
-    let pos: u32 = parts.get(1)?.strip_prefix("position")?.parse().ok()?;
-    let time: u32 = parts.get(2)?.strip_prefix("time")?.parse().ok()?;
-    let z: u32 = parts.get(3)?.strip_prefix("z")?.parse().ok()?;
+    let normalized = stem.replace('-', "_");
+    let parts: Vec<&str> = normalized.split('_').collect();
+    let (channel_part, pos_part, time_part, z_part) = match parts.as_slice() {
+        [first, pos, time, z] => (*first, *pos, *time, *z),
+        ["img", second, pos, time, z] => (*second, *pos, *time, *z),
+        _ => return None,
+    };
+
+    let parse_axis = |value: &str, prefix: &str| -> Option<u32> {
+        value.strip_prefix(prefix)?.parse().ok()
+    };
+
+    let channel = if channel_part.starts_with("img_channel") {
+        parse_axis(channel_part, "img_channel")
+    } else {
+        parse_axis(channel_part, "channel")
+    }?;
+    let pos = parse_axis(pos_part, "position")?;
+    let time = parse_axis(time_part, "time")?;
+    let z = parse_axis(z_part, "z")?;
+
     Some((channel, pos, time, z))
 }
 
@@ -1610,9 +1861,7 @@ fn scan_tiff_records(folder: &Path) -> Result<Vec<TiffRecord>, Box<dyn std::erro
         }
     }
 
-    records.sort_by(|a, b| {
-        (a.pos, a.channel, a.time, a.z).cmp(&(b.pos, b.channel, b.time, b.z))
-    });
+    records.sort_by(|a, b| (a.pos, a.channel, a.time, a.z).cmp(&(b.pos, b.channel, b.time, b.z)));
 
     Ok(records)
 }
@@ -1641,7 +1890,11 @@ fn parse_prediction_csv(path: &Path) -> Result<Vec<Value>, String> {
             continue;
         }
         if line_idx == 0 {
-            let first = parts.first().copied().unwrap_or_default().to_ascii_lowercase();
+            let first = parts
+                .first()
+                .copied()
+                .unwrap_or_default()
+                .to_ascii_lowercase();
             if first == "t" || first == "time" {
                 continue;
             }
@@ -1652,7 +1905,10 @@ fn parse_prediction_csv(path: &Path) -> Result<Vec<Value>, String> {
             .ok_or_else(|| "missing t value".to_string())?
             .parse::<u32>()
             .map_err(|_| "invalid t value in prediction csv".to_string())?;
-        let crop = parts.get(1).ok_or_else(|| "missing crop value".to_string())?.to_string();
+        let crop = parts
+            .get(1)
+            .ok_or_else(|| "missing crop value".to_string())?
+            .to_string();
         let label = parts
             .get(2)
             .and_then(|value| parse_csv_bool(value))
@@ -1667,7 +1923,144 @@ fn parse_json_field<T>(raw: Option<String>) -> T
 where
     T: DeserializeOwned + Default,
 {
-    raw.and_then(|value| serde_json::from_str(&value).ok()).unwrap_or_default()
+    raw.and_then(|value| serde_json::from_str(&value).ok())
+        .unwrap_or_default()
+}
+
+fn annotation_classification_csv_path(folder: &Path, pos: u32) -> PathBuf {
+    folder.join(format!("Pos{}_annotation_classification.csv", pos))
+}
+
+fn annotation_spot_csv_path(folder: &Path, pos: u32) -> PathBuf {
+    folder.join(format!("Pos{}_annotation_spots.csv", pos))
+}
+
+fn annotation_segmentation_csv_path(folder: &Path, pos: u32) -> PathBuf {
+    folder.join(format!("Pos{}_annotation_segmentation.csv", pos))
+}
+
+fn load_csv_rows<TCsv, TRow>(path: &Path) -> Result<Vec<TRow>, String>
+where
+    TCsv: DeserializeOwned,
+    TRow: From<TCsv>,
+{
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut reader = csv::ReaderBuilder::new()
+        .trim(csv::Trim::All)
+        .from_path(path)
+        .map_err(|error| error.to_string())?;
+    let mut rows = Vec::new();
+    for row in reader.deserialize::<TCsv>() {
+        rows.push(TRow::from(row.map_err(|error| error.to_string())?));
+    }
+    Ok(rows)
+}
+
+fn write_csv_rows<TCsv>(path: &Path, rows: &[TCsv]) -> Result<(), String>
+where
+    TCsv: Serialize,
+{
+    if rows.is_empty() {
+        match fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.to_string()),
+        }
+        return Ok(());
+    }
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+
+    let mut writer = csv::WriterBuilder::new()
+        .has_headers(true)
+        .from_path(path)
+        .map_err(|error| error.to_string())?;
+    for row in rows {
+        writer.serialize(row).map_err(|error| error.to_string())?;
+    }
+    writer.flush().map_err(|error| error.to_string())
+}
+
+fn load_annotation_bundle(folder: &Path, pos: u32) -> Result<AnnotationLoadResponse, String> {
+    Ok(AnnotationLoadResponse {
+        classifications: load_csv_rows::<
+            AnnotationClassificationCsvRow,
+            AnnotationClassificationRow,
+        >(&annotation_classification_csv_path(folder, pos))?,
+        spots: load_csv_rows::<AnnotationSpotCsvRow, AnnotationSpotRow>(
+            &annotation_spot_csv_path(folder, pos),
+        )?,
+        segmentations: load_csv_rows::<AnnotationSegmentationCsvRow, AnnotationSegmentationRow>(
+            &annotation_segmentation_csv_path(folder, pos),
+        )?,
+    })
+}
+
+fn save_annotation_bundle(
+    folder: &Path,
+    pos: u32,
+    bundle: &AnnotationLoadResponse,
+) -> Result<(), String> {
+    let mut classifications = bundle.classifications.clone();
+    classifications.sort_by(|a, b| {
+        (a.roi.as_str(), a.t, a.c, a.z, a.class_name.as_str()).cmp(&(
+            b.roi.as_str(),
+            b.t,
+            b.c,
+            b.z,
+            b.class_name.as_str(),
+        ))
+    });
+
+    let mut spots = bundle.spots.clone();
+    spots.sort_by(|a, b| {
+        (a.roi.as_str(), a.t, a.c, a.z, a.spot_idx).cmp(&(
+            b.roi.as_str(),
+            b.t,
+            b.c,
+            b.z,
+            b.spot_idx,
+        ))
+    });
+
+    let mut segmentations = bundle.segmentations.clone();
+    segmentations.sort_by(|a, b| {
+        (a.roi.as_str(), a.t, a.c, a.z, a.contour_idx, a.node_idx).cmp(&(
+            b.roi.as_str(),
+            b.t,
+            b.c,
+            b.z,
+            b.contour_idx,
+            b.node_idx,
+        ))
+    });
+
+    let classification_rows: Vec<AnnotationClassificationCsvRow> = classifications
+        .iter()
+        .map(AnnotationClassificationCsvRow::from)
+        .collect();
+    let spot_rows: Vec<AnnotationSpotCsvRow> =
+        spots.iter().map(AnnotationSpotCsvRow::from).collect();
+    let segmentation_rows: Vec<AnnotationSegmentationCsvRow> = segmentations
+        .iter()
+        .map(AnnotationSegmentationCsvRow::from)
+        .collect();
+
+    write_csv_rows(
+        &annotation_classification_csv_path(folder, pos),
+        &classification_rows,
+    )?;
+    write_csv_rows(&annotation_spot_csv_path(folder, pos), &spot_rows)?;
+    write_csv_rows(
+        &annotation_segmentation_csv_path(folder, pos),
+        &segmentation_rows,
+    )?;
+    Ok(())
 }
 
 fn bbox_csv_paths(folder: &Path, pos: u32) -> Vec<PathBuf> {
@@ -1785,6 +2178,8 @@ fn main() {
             register_save_bbox,
             roi_discover,
             roi_load_frame,
+            annotations_load,
+            annotations_save,
             tasks_insert,
             tasks_update,
             tasks_list,
@@ -1798,4 +2193,162 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct TempTestDir {
+        path: PathBuf,
+    }
+
+    impl TempTestDir {
+        fn new() -> Self {
+            let path = env::temp_dir().join(format!("lisca-desktop-annotation-{}", Uuid::new_v4()));
+            fs::create_dir_all(&path).expect("create temp dir");
+            Self { path }
+        }
+    }
+
+    impl Drop for TempTestDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+
+    #[test]
+    fn annotation_load_missing_files_returns_empty() {
+        let temp_dir = TempTestDir::new();
+        let bundle = load_annotation_bundle(&temp_dir.path, 3).expect("load empty annotations");
+        assert_eq!(bundle, AnnotationLoadResponse::default());
+    }
+
+    #[test]
+    fn annotation_classifications_round_trip_quoted_values() {
+        let temp_dir = TempTestDir::new();
+        let bundle = AnnotationLoadResponse {
+            classifications: vec![AnnotationClassificationRow {
+                roi: "roi_1".to_string(),
+                t: 2,
+                c: 1,
+                z: 0,
+                class_name: "dead, late".to_string(),
+            }],
+            ..AnnotationLoadResponse::default()
+        };
+
+        save_annotation_bundle(&temp_dir.path, 7, &bundle).expect("save annotations");
+        let loaded = load_annotation_bundle(&temp_dir.path, 7).expect("load annotations");
+
+        assert_eq!(loaded.classifications, bundle.classifications);
+    }
+
+    #[test]
+    fn annotation_save_then_load_preserves_all_row_fields() {
+        let temp_dir = TempTestDir::new();
+        let bundle = AnnotationLoadResponse {
+            classifications: vec![AnnotationClassificationRow {
+                roi: "roi_a".to_string(),
+                t: 1,
+                c: 0,
+                z: 4,
+                class_name: "alive".to_string(),
+            }],
+            spots: vec![AnnotationSpotRow {
+                roi: "roi_a".to_string(),
+                t: 1,
+                c: 0,
+                z: 4,
+                spot_idx: 0,
+                x: 12.5,
+                y: 33.75,
+            }],
+            segmentations: vec![
+                AnnotationSegmentationRow {
+                    roi: "roi_a".to_string(),
+                    t: 1,
+                    c: 0,
+                    z: 4,
+                    contour_idx: 0,
+                    node_idx: 0,
+                    x: 1.0,
+                    y: 2.0,
+                },
+                AnnotationSegmentationRow {
+                    roi: "roi_a".to_string(),
+                    t: 1,
+                    c: 0,
+                    z: 4,
+                    contour_idx: 0,
+                    node_idx: 1,
+                    x: 3.0,
+                    y: 4.0,
+                },
+            ],
+        };
+
+        save_annotation_bundle(&temp_dir.path, 9, &bundle).expect("save annotations");
+        let loaded = load_annotation_bundle(&temp_dir.path, 9).expect("load annotations");
+
+        assert_eq!(loaded, bundle);
+    }
+
+    #[test]
+    fn annotation_save_empty_rows_removes_files() {
+        let temp_dir = TempTestDir::new();
+        let pos = 5;
+        let bundle = AnnotationLoadResponse {
+            classifications: vec![AnnotationClassificationRow {
+                roi: "roi_x".to_string(),
+                t: 0,
+                c: 0,
+                z: 0,
+                class_name: "control".to_string(),
+            }],
+            spots: vec![AnnotationSpotRow {
+                roi: "roi_x".to_string(),
+                t: 0,
+                c: 0,
+                z: 0,
+                spot_idx: 0,
+                x: 8.0,
+                y: 9.0,
+            }],
+            segmentations: vec![AnnotationSegmentationRow {
+                roi: "roi_x".to_string(),
+                t: 0,
+                c: 0,
+                z: 0,
+                contour_idx: 0,
+                node_idx: 0,
+                x: 1.0,
+                y: 1.0,
+            }],
+        };
+
+        save_annotation_bundle(&temp_dir.path, pos, &bundle).expect("save annotations");
+        assert!(annotation_classification_csv_path(&temp_dir.path, pos).exists());
+        assert!(annotation_spot_csv_path(&temp_dir.path, pos).exists());
+        assert!(annotation_segmentation_csv_path(&temp_dir.path, pos).exists());
+
+        save_annotation_bundle(&temp_dir.path, pos, &AnnotationLoadResponse::default())
+            .expect("clear annotations");
+
+        assert!(!annotation_classification_csv_path(&temp_dir.path, pos).exists());
+        assert!(!annotation_spot_csv_path(&temp_dir.path, pos).exists());
+        assert!(!annotation_segmentation_csv_path(&temp_dir.path, pos).exists());
+    }
+
+    #[test]
+    fn parse_tiff_filename_accepts_img_channel_prefix() {
+        let parsed = parse_tiff_filename("img_channel000_position140_time000000000_z000.tif");
+        assert_eq!(parsed, Some((0, 140, 0, 0)));
+    }
+
+    #[test]
+    fn parse_tiff_filename_accepts_img_prefix_segments() {
+        let parsed = parse_tiff_filename("img_channel000-position140-time000000001-z000.tif");
+        assert_eq!(parsed, Some((0, 140, 1, 0)));
+    }
 }

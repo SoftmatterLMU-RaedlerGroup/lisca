@@ -7,7 +7,10 @@ use crate::common::slices;
 use crate::domain::schema;
 use crate::io::zarr;
 
-pub fn run(args: MovieArgs, progress: impl Fn(f64, &str)) -> Result<(), Box<dyn std::error::Error>> {
+pub fn run(
+    args: MovieArgs,
+    progress: impl Fn(f64, &str),
+) -> Result<(), Box<dyn std::error::Error>> {
     let workspace = Path::new(&args.workspace);
     let roi_store_path = workspace.join(schema::roi_store_dir(args.pos));
     let roi_id = args.roi.to_string();
@@ -19,7 +22,12 @@ pub fn run(args: MovieArgs, progress: impl Fn(f64, &str)) -> Result<(), Box<dyn 
     let n_t = shape[0];
     let n_channels = shape[1];
     if args.channel >= n_channels as u32 {
-        return Err(format!("Channel {} out of range (0-{})", args.channel, n_channels - 1).into());
+        return Err(format!(
+            "Channel {} out of range (0-{})",
+            args.channel,
+            n_channels - 1
+        )
+        .into());
     }
     let h = shape[3];
     let w = shape[4];
@@ -35,8 +43,7 @@ pub fn run(args: MovieArgs, progress: impl Fn(f64, &str)) -> Result<(), Box<dyn 
             (i + 1) as f64 / time_indices.len() as f64 * 0.4,
             &format!("Reading frames {}/{}", i + 1, time_indices.len()),
         );
-        let chunk_indices = vec![t as u64, args.channel as u64, 0, 0, 0];
-        let data = zarr::read_chunk_u16(&arr, &chunk_indices)?;
+        let data = zarr::read_raw_frame_u16(&arr, t as u64, args.channel as u64, 0)?;
         let f64_frame: Vec<f64> = data.iter().map(|&v| v as f64).collect();
         frames_raw.push(f64_frame);
     }
@@ -75,7 +82,11 @@ pub fn run(args: MovieArgs, progress: impl Fn(f64, &str)) -> Result<(), Box<dyn 
 
     let pad_h = (16 - (h % 16)) % 16;
     let pad_w = (16 - (w % 16)) % 16;
-    let (out_w, out_h) = if pad_h > 0 || pad_w > 0 { (w + pad_w, h + pad_h) } else { (w, h) };
+    let (out_w, out_h) = if pad_h > 0 || pad_w > 0 {
+        (w + pad_w, h + pad_h)
+    } else {
+        (w, h)
+    };
 
     let mut padded = Vec::new();
     for rgb in &frames_rgb {
@@ -96,7 +107,26 @@ pub fn run(args: MovieArgs, progress: impl Fn(f64, &str)) -> Result<(), Box<dyn 
 
     let mut child = Command::new("ffmpeg")
         .args([
-            "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", &format!("{}x{}", out_w, out_h), "-r", &args.fps.to_string(), "-i", "pipe:0", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "slow", "-crf", "15", "-y", &args.output,
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgb24",
+            "-s",
+            &format!("{}x{}", out_w, out_h),
+            "-r",
+            &args.fps.to_string(),
+            "-i",
+            "pipe:0",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-preset",
+            "slow",
+            "-crf",
+            "15",
+            "-y",
+            &args.output,
         ])
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
@@ -106,7 +136,10 @@ pub fn run(args: MovieArgs, progress: impl Fn(f64, &str)) -> Result<(), Box<dyn 
     let mut stdin = child.stdin.take().ok_or("Failed to open ffmpeg stdin")?;
     for (i, frame) in padded.iter().enumerate() {
         stdin.write_all(frame)?;
-        progress(0.4 + (i + 1) as f64 / padded.len() as f64 * 0.6, &format!("Encoding {}/{}", i + 1, padded.len()));
+        progress(
+            0.4 + (i + 1) as f64 / padded.len() as f64 * 0.6,
+            &format!("Encoding {}/{}", i + 1, padded.len()),
+        );
     }
     drop(stdin);
     let status = child.wait()?;
@@ -139,9 +172,18 @@ fn apply_colormap(v: f64, colormap: &str) -> (u8, u8, u8) {
         }
         "viridis" => {
             let t = v;
-            let r = (0.267 + 0.3244 * t + 2.6477 * t * t - 4.4098 * t * t * t + 2.0942 * t * t * t * t).clamp(0.0, 1.0) * 255.0;
-            let g = (0.0046 + 0.0495 * t + 2.5253 * t * t - 6.0613 * t * t * t + 3.7466 * t * t * t * t).clamp(0.0, 1.0) * 255.0;
-            let b = (0.3294 + 0.1002 * t + 2.3256 * t * t - 3.1356 * t * t * t + 1.5046 * t * t * t * t).clamp(0.0, 1.0) * 255.0;
+            let r = (0.267 + 0.3244 * t + 2.6477 * t * t - 4.4098 * t * t * t
+                + 2.0942 * t * t * t * t)
+                .clamp(0.0, 1.0)
+                * 255.0;
+            let g = (0.0046 + 0.0495 * t + 2.5253 * t * t - 6.0613 * t * t * t
+                + 3.7466 * t * t * t * t)
+                .clamp(0.0, 1.0)
+                * 255.0;
+            let b = (0.3294 + 0.1002 * t + 2.3256 * t * t - 3.1356 * t * t * t
+                + 1.5046 * t * t * t * t)
+                .clamp(0.0, 1.0)
+                * 255.0;
             (r.round() as u8, g.round() as u8, b.round() as u8)
         }
         _ => {

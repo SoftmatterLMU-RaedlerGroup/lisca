@@ -9,10 +9,18 @@ import {
   SkipBack,
   SkipForward,
 } from "lucide-react";
+import AnnotationDialog from "@/components/work/AnnotationDialog";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import { api } from "@/lib/api";
-import type { CropInfo } from "@/lib/types";
+import {
+  createEmptyPositionAnnotationData,
+  getFrameAnnotationDraft,
+  replaceFrameAnnotations,
+  type FrameAnnotationDraft,
+} from "@/lib/annotations";
+import { cn } from "@/lib/utils";
+import type { AnnotationFrameKey, CropInfo } from "@/lib/types";
 
 interface RoiFrame {
   width: number;
@@ -60,36 +68,44 @@ function canvasKey(pos: number, cropId: string): string {
   return `${pos}:${cropId}`;
 }
 
+const EMPTY_DRAFT: FrameAnnotationDraft = {
+  classification: null,
+  spots: [],
+  segmentations: [],
+};
+
 export default function ViewTab({
   folder,
   pos,
   times,
   selectedTime,
   onSelectTime,
-  channels,
   selectedChannel,
-  zSlices,
   selectedZ,
+  classificationOptions,
 }: {
   folder: string;
   pos: number;
   times: number[];
   selectedTime: number;
   onSelectTime: (time: number) => void;
-  channels: number[];
   selectedChannel: number;
-  zSlices: number[];
   selectedZ: number;
+  classificationOptions: string[];
 }) {
   const [crops, setCrops] = useState<CropInfo[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [annotationError, setAnnotationError] = useState<string | null>(null);
   const [page, setPage] = useState(0);
   const [playing, setPlaying] = useState(false);
+  const [annotateMode, setAnnotateMode] = useState(false);
   const [contrastMin, setContrastMin] = useState(0);
   const [contrastMax, setContrastMax] = useState(65535);
   const [autoContrastPending, setAutoContrastPending] = useState(true);
   const [frameByCropId, setFrameByCropId] = useState<Map<string, RoiFrame>>(new Map());
+  const [annotationData, setAnnotationData] = useState(createEmptyPositionAnnotationData);
+  const [activeAnnotationCropId, setActiveAnnotationCropId] = useState<string | null>(null);
 
   const canvasRefs = useRef<Map<string, HTMLCanvasElement>>(new Map());
   const playIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -98,19 +114,31 @@ export default function ViewTab({
     const idx = times.indexOf(selectedTime);
     return idx >= 0 ? idx : 0;
   }, [selectedTime, times]);
-  const cIndex = useMemo(() => {
-    const idx = channels.indexOf(selectedChannel);
-    return idx >= 0 ? idx : 0;
-  }, [channels, selectedChannel]);
-  const zIndex = useMemo(() => {
-    const idx = zSlices.indexOf(selectedZ);
-    return idx >= 0 ? idx : 0;
-  }, [selectedZ, zSlices]);
 
   const maxT = Math.max(0, (crops[0]?.shape[0] ?? 1) - 1);
   const totalPages = Math.max(1, Math.ceil(crops.length / PAGE_SIZE));
   const clampedPage = Math.min(page, totalPages - 1);
   const pageCrops = crops.slice(clampedPage * PAGE_SIZE, (clampedPage + 1) * PAGE_SIZE);
+  const displayedTime = times[Math.min(tIndex, maxT)] ?? selectedTime;
+
+  const activeFrameKey = useMemo<AnnotationFrameKey | null>(() => {
+    if (!activeAnnotationCropId) return null;
+    return {
+      roi: activeAnnotationCropId,
+      t: displayedTime,
+      c: selectedChannel,
+      z: selectedZ,
+    };
+  }, [activeAnnotationCropId, displayedTime, selectedChannel, selectedZ]);
+
+  const activeAnnotationFrame = activeAnnotationCropId
+    ? frameByCropId.get(activeAnnotationCropId) ?? null
+    : null;
+
+  const activeDraft = useMemo(
+    () => (activeFrameKey ? getFrameAnnotationDraft(annotationData, activeFrameKey) : EMPTY_DRAFT),
+    [activeFrameKey, annotationData],
+  );
 
   useEffect(() => {
     if (tIndex > maxT) {
@@ -127,6 +155,7 @@ export default function ViewTab({
     let cancelled = false;
     if (!folder) {
       setCrops([]);
+      setAnnotationData(createEmptyPositionAnnotationData());
       return;
     }
 
@@ -139,15 +168,41 @@ export default function ViewTab({
         setCrops(response.crops);
         setAutoContrastPending(true);
       } catch (err) {
-        if (!cancelled) {
-          setError(err instanceof Error ? err.message : String(err));
-          setCrops([]);
-        }
+        if (cancelled) return;
+        setError(err instanceof Error ? err.message : String(err));
+        setCrops([]);
       } finally {
         if (!cancelled) setLoading(false);
       }
     };
 
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [folder, pos]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!folder) {
+      setAnnotationData(createEmptyPositionAnnotationData());
+      return;
+    }
+
+    const run = async () => {
+      setAnnotationError(null);
+      try {
+        const response = await api.annotations.load({ folder, pos });
+        if (cancelled) return;
+        setAnnotationData(response);
+      } catch (err) {
+        if (cancelled) return;
+        setAnnotationData(createEmptyPositionAnnotationData());
+        setAnnotationError(err instanceof Error ? err.message : String(err));
+      }
+    };
+
+    setActiveAnnotationCropId(null);
     void run();
     return () => {
       cancelled = true;
@@ -184,9 +239,9 @@ export default function ViewTab({
             folder,
             pos,
             cropId: crop.cropId,
-            t: Math.min(tIndex, maxT),
-            c: cIndex,
-            z: zIndex,
+            t: displayedTime,
+            c: selectedChannel,
+            z: selectedZ,
           }),
         ),
       );
@@ -227,7 +282,7 @@ export default function ViewTab({
     return () => {
       cancelled = true;
     };
-  }, [autoContrastPending, cIndex, folder, maxT, pageCrops, pos, tIndex, zIndex]);
+  }, [autoContrastPending, displayedTime, folder, pageCrops, pos, selectedChannel, selectedZ]);
 
   useEffect(() => {
     pageCrops.forEach((crop) => {
@@ -247,6 +302,24 @@ export default function ViewTab({
       }
     },
     [],
+  );
+
+  const handleSaveAnnotation = useCallback(
+    async (draft: FrameAnnotationDraft) => {
+      if (!activeFrameKey) return;
+
+      const nextData = replaceFrameAnnotations(annotationData, activeFrameKey, draft);
+      await api.annotations.save({
+        folder,
+        pos,
+        classifications: nextData.classifications,
+        spots: nextData.spots,
+        segmentations: nextData.segmentations,
+      });
+      setAnnotationData(nextData);
+      setAnnotationError(null);
+    },
+    [activeFrameKey, annotationData, folder, pos],
   );
 
   const timeSliderMax = Math.max(maxT, 1);
@@ -295,8 +368,17 @@ export default function ViewTab({
             auto
           </Button>
         </div>
-        <div className="justify-self-end text-sm tabular-nums">
-          t {Math.min(tIndex, maxT)}/{maxT}
+        <div className="flex items-center justify-end gap-2">
+          <Button
+            variant={annotateMode ? "default" : "outline"}
+            size="xs"
+            onClick={() => setAnnotateMode((prev) => !prev)}
+          >
+            annotate
+          </Button>
+          <div className="text-sm tabular-nums">
+            t {Math.min(tIndex, maxT)}/{maxT}
+          </div>
         </div>
       </div>
 
@@ -391,7 +473,9 @@ export default function ViewTab({
 
       <div className="min-h-0 flex-1 overflow-hidden rounded-lg border border-border bg-muted/20 p-2">
         {loading ? (
-          <div className="flex h-full items-center justify-center text-sm text-muted-foreground">loading ROI crops...</div>
+          <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+            loading ROI crops...
+          </div>
         ) : noCrops ? (
           <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
             {`no Pos${pos}_roi.zarr crops found for this position.`}
@@ -399,7 +483,28 @@ export default function ViewTab({
         ) : (
           <div className="grid h-full grid-cols-3 grid-rows-3 gap-2">
             {pageCrops.map((crop) => (
-              <div key={crop.cropId} className="relative overflow-hidden rounded border border-border bg-background">
+              <div
+                key={crop.cropId}
+                role={annotateMode ? "button" : undefined}
+                tabIndex={annotateMode ? 0 : -1}
+                className={cn(
+                  "relative overflow-hidden rounded border border-border bg-background",
+                  annotateMode &&
+                    frameByCropId.has(crop.cropId) &&
+                    "cursor-pointer ring-primary/40 transition hover:ring-2 focus:outline-none focus:ring-2",
+                )}
+                onClick={() => {
+                  if (!annotateMode || !frameByCropId.has(crop.cropId)) return;
+                  setActiveAnnotationCropId(crop.cropId);
+                }}
+                onKeyDown={(event) => {
+                  if (!annotateMode || !frameByCropId.has(crop.cropId)) return;
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    setActiveAnnotationCropId(crop.cropId);
+                  }
+                }}
+              >
                 <canvas
                   ref={setCanvasRef(canvasKey(pos, crop.cropId))}
                   className="block h-full w-full object-contain"
@@ -415,6 +520,19 @@ export default function ViewTab({
       </div>
 
       {error && <p className="text-xs text-destructive">{error}</p>}
+      {annotationError && <p className="text-xs text-destructive">{annotationError}</p>}
+
+      <AnnotationDialog
+        open={activeAnnotationCropId != null}
+        frameKey={activeFrameKey}
+        frame={activeAnnotationFrame}
+        contrastMin={contrastMin}
+        contrastMax={contrastMax}
+        classificationOptions={classificationOptions}
+        initialDraft={activeDraft}
+        onClose={() => setActiveAnnotationCropId(null)}
+        onSave={handleSaveAnnotation}
+      />
     </div>
   );
 }

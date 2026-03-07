@@ -35,7 +35,7 @@ def _write_bbox(path: Path) -> None:
 
 
 def test_crop_writes_v1_schema(tmp_path: Path) -> None:
-    _write_fixture_tiffs(tmp_path)
+    _write_fixture_tiffs(tmp_path, n_t=70)
     bbox = tmp_path / "bbox.csv"
     _write_bbox(bbox)
 
@@ -48,8 +48,14 @@ def test_crop_writes_v1_schema(tmp_path: Path) -> None:
     assert int(bg.attrs["schema_version"]) == 1
     assert np.asarray(roi["index/roi_ids"][:]).tolist() == [7]
     assert np.asarray(bg["index/roi_ids"][:]).tolist() == [7]
-    assert roi["roi/7/raw"].shape == (3, 2, 1, 16, 16)
-    assert bg["roi/7/background"].shape == (3, 2, 1)
+    raw = roi["roi/7/raw"]
+    bg_arr = bg["roi/7/background"]
+    assert raw.shape == (70, 2, 1, 16, 16)
+    assert tuple(raw.chunks) == (1, 1, 1, 16, 16)
+    assert tuple(raw.shards) == (64, 2, 1, 16, 16)
+    assert bg_arr.shape == (70, 2, 1)
+    assert tuple(bg_arr.chunks) == (1, 1, 1)
+    assert tuple(bg_arr.shards) == (70, 2, 1)
 
 
 def test_expression_reads_v1_schema(tmp_path: Path) -> None:

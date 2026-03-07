@@ -137,6 +137,36 @@ export interface LoadRoiFrameFailure {
 
 export type LoadRoiFrameResponse = LoadRoiFrameSuccess | LoadRoiFrameFailure;
 
+export interface AnnotationFrameKey {
+  roi: string;
+  t: number;
+  c: number;
+  z: number;
+}
+
+export interface AnnotationClassificationRow extends AnnotationFrameKey {
+  className: string;
+}
+
+export interface AnnotationSpotRow extends AnnotationFrameKey {
+  spotIdx: number;
+  x: number;
+  y: number;
+}
+
+export interface AnnotationSegmentationRow extends AnnotationFrameKey {
+  contourIdx: number;
+  nodeIdx: number;
+  x: number;
+  y: number;
+}
+
+export interface AnnotationLoadResponse {
+  classifications: AnnotationClassificationRow[];
+  spots: AnnotationSpotRow[];
+  segmentations: AnnotationSegmentationRow[];
+}
+
 export interface KillPredictionRow {
   t: number;
   crop: string;
@@ -168,6 +198,10 @@ export interface AssayChannelName {
   name: string;
 }
 
+export interface AssayAnnotations {
+  classification_options?: string[];
+}
+
 export interface RegisterParams {
   shape: "square" | "hex";
   a: number;
@@ -188,6 +222,7 @@ export interface AssayYaml {
   data_folder: string;
   brightfield_channel: number;
   channel_names?: AssayChannelName[];
+  annotations?: AssayAnnotations;
   samples: AssaySample[];
   register: RegisterParams;
 }

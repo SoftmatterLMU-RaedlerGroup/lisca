@@ -1,9 +1,9 @@
 use image::{imageops::FilterType, GrayImage, ImageBuffer, Luma};
 use ndarray::{Array, ArrayViewD, Ix4};
+#[cfg(any(windows, target_os = "linux"))]
+use ort::ep::{ExecutionProvider, CUDA};
 use ort::session::Session;
 use ort::value::Tensor;
-#[cfg(any(windows, target_os = "linux"))]
-use ort::ep::{CUDA, ExecutionProvider};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
@@ -52,7 +52,9 @@ fn normalize_frame(data: &[u16]) -> Vec<u8> {
     if data.is_empty() {
         return vec![];
     }
-    let (min, max) = data.iter().fold((data[0], data[0]), |(mn, mx), &v| (mn.min(v), mx.max(v)));
+    let (min, max) = data
+        .iter()
+        .fold((data[0], data[0]), |(mn, mx), &v| (mn.min(v), mx.max(v)));
     let range = (max - min) as f64;
     data.iter()
         .map(|&v| {
@@ -67,7 +69,9 @@ fn normalize_frame(data: &[u16]) -> Vec<u8> {
 
 fn resize_to_224(data: &[u8], width: u32, height: u32) -> GrayImage {
     let img = ImageBuffer::<Luma<u8>, Vec<u8>>::from_raw(width, height, data.to_vec())
-        .unwrap_or_else(|| ImageBuffer::from_raw(width, height, vec![0; (width * height) as usize]).unwrap());
+        .unwrap_or_else(|| {
+            ImageBuffer::from_raw(width, height, vec![0; (width * height) as usize]).unwrap()
+        });
     image::imageops::resize(&img, IMAGE_SIZE, IMAGE_SIZE, FilterType::Triangle)
 }
 
@@ -83,7 +87,10 @@ fn to_nchw_normalized(gray: &GrayImage) -> Vec<f32> {
     out
 }
 
-pub fn run(args: KillingArgs, progress_cb: impl Fn(f64, &str)) -> Result<(), Box<dyn std::error::Error>> {
+pub fn run(
+    args: KillingArgs,
+    progress_cb: impl Fn(f64, &str),
+) -> Result<(), Box<dyn std::error::Error>> {
     let workspace = Path::new(&args.workspace);
     let roi_store_path = workspace.join(schema::roi_store_dir(args.pos));
     let roi_root = roi_store_path.join("roi");
@@ -113,7 +120,10 @@ pub fn run(args: KillingArgs, progress_cb: impl Fn(f64, &str)) -> Result<(), Box
     let mut indices: Vec<FrameIndex> = Vec::new();
     for (i, roi_id) in roi_ids.iter().enumerate() {
         if i > 0 && i % 100 == 0 {
-            progress_cb(i as f64 / roi_ids.len() as f64 * 0.2, &format!("Scanning {}/{} rois", i, roi_ids.len()));
+            progress_cb(
+                i as f64 / roi_ids.len() as f64 * 0.2,
+                &format!("Scanning {}/{} rois", i, roi_ids.len()),
+            );
         }
         let array_path = schema::raw_array_path(roi_id);
         let arr = zarr::open_array(&store, &array_path)?;
@@ -142,7 +152,12 @@ pub fn run(args: KillingArgs, progress_cb: impl Fn(f64, &str)) -> Result<(), Box
     }
 
     let mut session = build_session(&model_path, !args.cpu)?;
-    let input_name = session.inputs().first().ok_or("Model has no inputs")?.name().to_string();
+    let input_name = session
+        .inputs()
+        .first()
+        .ok_or("Model has no inputs")?
+        .name()
+        .to_string();
 
     let mut rows: Vec<(u64, String, bool)> = Vec::new();
     let mut array_cache: HashMap<String, zarr::StoreArray> = HashMap::new();
@@ -155,7 +170,7 @@ pub fn run(args: KillingArgs, progress_cb: impl Fn(f64, &str)) -> Result<(), Box
                 array_cache.insert(idx.roi_id.clone(), arr);
             }
             let arr = array_cache.get(&idx.roi_id).unwrap();
-            let data = zarr::read_chunk_u16(arr, &[idx.t, 0, 0, 0, 0])?;
+            let data = zarr::read_raw_frame_u16(arr, idx.t, 0, 0)?;
             batch_frames.push(RoiFrame {
                 t: idx.t,
                 roi_id: idx.roi_id.clone(),
@@ -166,7 +181,8 @@ pub fn run(args: KillingArgs, progress_cb: impl Fn(f64, &str)) -> Result<(), Box
         }
 
         let batch_len = batch_frames.len();
-        let mut batch_data = vec![0.0f32; batch_len * 3 * IMAGE_SIZE as usize * IMAGE_SIZE as usize];
+        let mut batch_data =
+            vec![0.0f32; batch_len * 3 * IMAGE_SIZE as usize * IMAGE_SIZE as usize];
 
         for (i, frame) in batch_frames.iter().enumerate() {
             let normalized = normalize_frame(&frame.data);
@@ -186,12 +202,24 @@ pub fn run(args: KillingArgs, progress_cb: impl Fn(f64, &str)) -> Result<(), Box
         let logits: ArrayViewD<f32> = output.try_extract_array()?;
 
         let ndim = logits.ndim();
-        let num_classes = if ndim >= 2 { logits.shape()[ndim - 1] } else { 2 };
+        let num_classes = if ndim >= 2 {
+            logits.shape()[ndim - 1]
+        } else {
+            2
+        };
         for (i, frame) in batch_frames.iter().enumerate() {
             let mut max_idx = 0;
-            let mut max_val = if ndim == 2 { logits[[i, 0]] } else { logits[[i, 0, 0, 0]] };
+            let mut max_val = if ndim == 2 {
+                logits[[i, 0]]
+            } else {
+                logits[[i, 0, 0, 0]]
+            };
             for c in 1..num_classes {
-                let v = if ndim == 2 { logits[[i, c]] } else { logits[[i, c, 0, 0]] };
+                let v = if ndim == 2 {
+                    logits[[i, c]]
+                } else {
+                    logits[[i, c, 0, 0]]
+                };
                 if v > max_val {
                     max_val = v;
                     max_idx = c;
@@ -202,16 +230,27 @@ pub fn run(args: KillingArgs, progress_cb: impl Fn(f64, &str)) -> Result<(), Box
 
         let processed = (batch_start + 1) * args.batch_size;
         let prog = 0.2 + (processed.min(total) as f64 / total as f64) * 0.8;
-        progress_cb(prog, &format!("Predicting {}/{}", processed.min(total), total));
+        progress_cb(
+            prog,
+            &format!("Predicting {}/{}", processed.min(total), total),
+        );
     }
 
     fs::create_dir_all(Path::new(&args.output).parent().unwrap_or(Path::new(".")))?;
     let mut csv = "t,crop,label\n".to_string();
     for (t, crop, label) in &rows {
-        csv.push_str(&format!("{},{},{}\n", t, crop, label.to_string().to_lowercase()));
+        csv.push_str(&format!(
+            "{},{},{}\n",
+            t,
+            crop,
+            label.to_string().to_lowercase()
+        ));
     }
     fs::write(&args.output, csv)?;
-    progress::emit(1.0, &format!("Wrote {} rows to {}", rows.len(), args.output));
+    progress::emit(
+        1.0,
+        &format!("Wrote {} rows to {}", rows.len(), args.output),
+    );
 
     Ok(())
 }

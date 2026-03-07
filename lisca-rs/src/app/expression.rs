@@ -5,7 +5,9 @@ use crate::cli::commands::expression::ExpressionArgs;
 use crate::domain::schema;
 use crate::io::zarr;
 
-fn list_roi_ids_from_store(roi_store_path: &Path) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+fn list_roi_ids_from_store(
+    roi_store_path: &Path,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let roi_root = roi_store_path.join("roi");
     if !roi_root.exists() {
         return Ok(vec![]);
@@ -24,7 +26,10 @@ fn list_roi_ids_from_store(roi_store_path: &Path) -> Result<Vec<String>, Box<dyn
     Ok(roi_ids)
 }
 
-pub fn run(args: ExpressionArgs, progress: impl Fn(f64, &str)) -> Result<(), Box<dyn std::error::Error>> {
+pub fn run(
+    args: ExpressionArgs,
+    progress: impl Fn(f64, &str),
+) -> Result<(), Box<dyn std::error::Error>> {
     let workspace = Path::new(&args.workspace);
     let roi_store_path = workspace.join(schema::roi_store_dir(args.pos));
     let bg_store_path = workspace.join(schema::bg_store_dir(args.pos));
@@ -37,7 +42,11 @@ pub fn run(args: ExpressionArgs, progress: impl Fn(f64, &str)) -> Result<(), Box
     }
 
     let roi_store = zarr::open_store(&roi_store_path)?;
-    let bg_store = if bg_store_path.exists() { Some(zarr::open_store(&bg_store_path)?) } else { None };
+    let bg_store = if bg_store_path.exists() {
+        Some(zarr::open_store(&bg_store_path)?)
+    } else {
+        None
+    };
 
     let mut rows: Vec<String> = vec!["t,crop,intensity,area,background".to_string()];
     let total = roi_ids.len();
@@ -57,24 +66,30 @@ pub fn run(args: ExpressionArgs, progress: impl Fn(f64, &str)) -> Result<(), Box
         };
 
         for t in 0..n_t {
-            let data = zarr::read_chunk_u16(&arr, &[t as u64, args.channel as u64, 0, 0, 0])?;
+            let data = zarr::read_raw_frame_u16(&arr, t as u64, args.channel as u64, 0)?;
             let intensity: u64 = data.iter().map(|&v| v as u64).sum();
             let background = if let Some(ref bg_arr) = bg_arr {
-                zarr::read_chunk_u16(bg_arr, &[t as u64, args.channel as u64, 0])
-                    .ok()
-                    .and_then(|d| d.first().copied())
-                    .unwrap_or(0)
+                zarr::read_bg_value_u16(bg_arr, t as u64, args.channel as u64, 0).unwrap_or(0)
             } else {
                 0
             };
-            rows.push(format!("{},{},{},{},{}", t, roi_id, intensity, area, background));
+            rows.push(format!(
+                "{},{},{},{},{}",
+                t, roi_id, intensity, area, background
+            ));
         }
 
-        progress((i + 1) as f64 / total as f64, &format!("Processing ROI {}/{}", i + 1, total));
+        progress(
+            (i + 1) as f64 / total as f64,
+            &format!("Processing ROI {}/{}", i + 1, total),
+        );
     }
 
     fs::create_dir_all(Path::new(&args.output).parent().unwrap_or(Path::new(".")))?;
     fs::write(&args.output, rows.join("\n"))?;
-    progress(1.0, &format!("Wrote {} rows to {}", rows.len() - 1, args.output));
+    progress(
+        1.0,
+        &format!("Wrote {} rows to {}", rows.len() - 1, args.output),
+    );
     Ok(())
 }

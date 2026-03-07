@@ -1,6 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
+  AnnotationClassificationRow,
+  AnnotationLoadResponse,
+  AnnotationSegmentationRow,
+  AnnotationSpotRow,
   AssayListItem,
   AssayMeta,
   AutoRegisterResponse,
@@ -16,6 +20,13 @@ import type {
 
 async function invokeCommand<T>(command: string, payload?: Record<string, unknown>): Promise<T> {
   return invoke<T>(command, payload);
+}
+
+function invokePayloadCommand<T>(
+  command: string,
+  payload: Record<string, unknown>,
+): Promise<T> {
+  return invoke<T>(command, { payload });
 }
 
 function safeListenProgress(
@@ -42,7 +53,7 @@ export const api = {
     list: (): Promise<AssayListItem[]> => invokeCommand<AssayListItem[]>("assays_list"),
     remove: (id: string): Promise<boolean> => invokeCommand<boolean>("assays_remove", { id }),
     upsert: (meta: AssayMeta): Promise<{ id: string }> =>
-      invokeCommand<{ id: string }>("assays_upsert", { meta }),
+      invokePayloadCommand<{ id: string }>("assays_upsert", { meta }),
     pickDataFolder: (): Promise<{ path: string } | null> =>
       invokeCommand<{ path: string } | null>("assays_pick_data_folder"),
     pickAssayYaml: (): Promise<{ file: string; folder: string } | null> =>
@@ -50,11 +61,16 @@ export const api = {
     readYaml: (folder: string): Promise<{ ok: true; yaml: string } | { ok: false; error: string }> =>
       invokeCommand<{ ok: true; yaml: string } | { ok: false; error: string }>("assays_read_yaml", { folder }),
     writeYaml: (folder: string, yaml: string): Promise<{ ok: true } | { ok: false; error: string }> =>
-      invokeCommand<{ ok: true } | { ok: false; error: string }>("assays_write_yaml", { folder, yaml }),
-    pathExists: (folder: string): Promise<boolean> => invokeCommand<boolean>("assays_path_exists", { folder }),
+      invokePayloadCommand<{ ok: true } | { ok: false; error: string }>(
+        "assays_write_yaml",
+        { folder, yaml },
+      ),
+    pathExists: (folder: string): Promise<boolean> =>
+      invokePayloadCommand<boolean>("assays_path_exists", { folder }),
   },
   register: {
-    scan: (folder: string): Promise<FolderScan> => invokeCommand<FolderScan>("register_scan", { folder }),
+    scan: (folder: string): Promise<FolderScan> =>
+      invokePayloadCommand<FolderScan>("register_scan", { folder }),
     readImage: (
       payload: {
         folder: string;
@@ -63,9 +79,9 @@ export const api = {
         time: number;
         z: number;
       },
-    ): Promise<ReadImageResponse> => invokeCommand<ReadImageResponse>("register_read_image", payload),
+    ): Promise<ReadImageResponse> => invokePayloadCommand<ReadImageResponse>("register_read_image", payload),
     readRegistration: (payload: { folder: string; pos: number }): Promise<ReadRegistrationResponse> =>
-      invokeCommand<ReadRegistrationResponse>("register_read_registration", payload),
+      invokePayloadCommand<ReadRegistrationResponse>("register_read_registration", payload),
     autoDetect: (payload: {
       folder: string;
       pos: number;
@@ -76,18 +92,18 @@ export const api = {
       w: number;
       h: number;
     }): Promise<AutoRegisterResponse> =>
-      invokeCommand<AutoRegisterResponse>("register_auto_detect", payload),
+      invokePayloadCommand<AutoRegisterResponse>("register_auto_detect", payload),
     saveBbox: (payload: {
       folder: string;
       pos: number;
       csv: string;
       registrationYaml?: string;
     }): Promise<{ ok: true } | { ok: false; error: string }> =>
-      invokeCommand<{ ok: true } | { ok: false; error: string }>("register_save_bbox", payload),
+      invokePayloadCommand<{ ok: true } | { ok: false; error: string }>("register_save_bbox", payload),
   },
   roi: {
     discover: (payload: { folder: string; pos: number }): Promise<DiscoverRoiResponse> =>
-      invokeCommand<DiscoverRoiResponse>("roi_discover", payload),
+      invokePayloadCommand<DiscoverRoiResponse>("roi_discover", payload),
     loadFrame: (payload: {
       folder: string;
       pos: number;
@@ -95,7 +111,19 @@ export const api = {
       t: number;
       c: number;
       z: number;
-    }): Promise<LoadRoiFrameResponse> => invokeCommand<LoadRoiFrameResponse>("roi_load_frame", payload),
+    }): Promise<LoadRoiFrameResponse> =>
+      invokePayloadCommand<LoadRoiFrameResponse>("roi_load_frame", payload),
+  },
+  annotations: {
+    load: (payload: { folder: string; pos: number }): Promise<AnnotationLoadResponse> =>
+      invokeCommand<AnnotationLoadResponse>("annotations_load", payload),
+    save: (payload: {
+      folder: string;
+      pos: number;
+      classifications: AnnotationClassificationRow[];
+      spots: AnnotationSpotRow[];
+      segmentations: AnnotationSegmentationRow[];
+    }): Promise<boolean> => invokeCommand<boolean>("annotations_save", payload),
   },
   tasks: {
     insert: (task: TaskRecord): Promise<boolean> => invokeCommand<boolean>("tasks_insert", { task }),
@@ -121,7 +149,7 @@ export const api = {
       w: number;
       h: number;
     }): Promise<AutoRegisterResponse> =>
-      invokeCommand<AutoRegisterResponse>("tasks_run_register_auto_detect", payload),
+      invokePayloadCommand<AutoRegisterResponse>("tasks_run_register_auto_detect", payload),
     runCrop: (payload: {
       taskId: string;
       folder: string;
@@ -137,7 +165,7 @@ export const api = {
           error: string;
           code?: "binary_not_found" | "exec_error";
         }
-    > => invokeCommand("tasks_run_crop", payload),
+    > => invokePayloadCommand("tasks_run_crop", payload),
     runKillingPredict: (payload: {
       taskId: string;
       folder: string;
@@ -155,14 +183,14 @@ export const api = {
           error: string;
           code?: "binary_not_found" | "exec_error";
         }
-    > => invokeCommand("tasks_run_killing_predict", payload),
+    > => invokePayloadCommand("tasks_run_killing_predict", payload),
   },
   application: {
     loadPredictionCsv: (payload: {
       folder: string;
       pos: number;
     }): Promise<{ ok: true; rows: KillPredictionRow[] } | { ok: false; error: string }> =>
-      invokeCommand<{ ok: true; rows: KillPredictionRow[] } | { ok: false; error: string }>(
+      invokePayloadCommand<{ ok: true; rows: KillPredictionRow[] } | { ok: false; error: string }>(
         "application_load_prediction_csv",
         payload,
       ),
