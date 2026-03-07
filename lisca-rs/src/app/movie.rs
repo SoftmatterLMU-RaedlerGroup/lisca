@@ -1,6 +1,7 @@
 use std::io::Write;
 use std::path::Path;
-use std::process::{Command, Stdio};
+
+use ffmpeg_sidecar::command::FfmpegCommand;
 
 use crate::cli::commands::movie::MovieArgs;
 use crate::common::slices;
@@ -105,16 +106,15 @@ pub fn run(
 
     std::fs::create_dir_all(Path::new(&args.output).parent().unwrap_or(Path::new(".")))?;
 
-    let mut child = Command::new("ffmpeg")
+    let video_size = format!("{}x{}", out_w, out_h);
+    let fps = args.fps.to_string();
+    let mut ffmpeg = FfmpegCommand::new();
+    ffmpeg
+        .args(["-f", "rawvideo", "-pix_fmt", "rgb24", "-s"])
+        .arg(&video_size)
+        .arg("-r")
+        .arg(&fps)
         .args([
-            "-f",
-            "rawvideo",
-            "-pix_fmt",
-            "rgb24",
-            "-s",
-            &format!("{}x{}", out_w, out_h),
-            "-r",
-            &args.fps.to_string(),
             "-i",
             "pipe:0",
             "-c:v",
@@ -125,15 +125,12 @@ pub fn run(
             "slow",
             "-crf",
             "15",
-            "-y",
-            &args.output,
         ])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()?;
+        .overwrite()
+        .arg(&args.output);
 
-    let mut stdin = child.stdin.take().ok_or("Failed to open ffmpeg stdin")?;
+    let mut child = ffmpeg.spawn()?;
+    let mut stdin = child.take_stdin().ok_or("Failed to open ffmpeg stdin")?;
     for (i, frame) in padded.iter().enumerate() {
         stdin.write_all(frame)?;
         progress(

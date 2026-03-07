@@ -5,6 +5,7 @@ edition = "2021"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+ffmpeg-sidecar = "2.4.0"
 
 [dependencies]
 tauri = { version = "2", features = [] }
@@ -13,8 +14,8 @@ rfd = "0.15"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 lisca-rs = { path = "../../lisca-rs" }
+ffmpeg-sidecar = { version = "2.4.0", default-features = false }
 uuid = { version = "1", features = ["v4"] }
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
-zip = "0.6"
+ureq = "3"
 rusqlite = { version = "0.32", features = ["bundled"] }
 csv = "1.3"

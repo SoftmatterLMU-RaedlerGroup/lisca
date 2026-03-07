@@ -25,3 +25,4 @@ zarrs = { version = "0.23", default-features = false, features = ["filesystem", 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 regex = "1"
+ffmpeg-sidecar = { version = "2.4.0", default-features = false }

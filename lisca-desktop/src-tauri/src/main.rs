@@ -4,6 +4,7 @@ use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
+use ffmpeg_sidecar::paths::sidecar_path;
 use lisca_rs::app::crop as crop_app;
 use lisca_rs::app::killing as killing_app;
 use lisca_rs::app::register as register_app;
@@ -16,7 +17,6 @@ use lisca_rs::common::progress as rs_progress;
 use lisca_rs::domain::schema;
 use lisca_rs::io::tiff::{read_tiff_frame, FrameData};
 use lisca_rs::io::zarr;
-use reqwest::blocking;
 use rfd::FileDialog;
 use rusqlite::{params, Connection};
 use serde::de::DeserializeOwned;
@@ -24,7 +24,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{self, json, Value};
 use tauri::{AppHandle, Emitter};
 use uuid::Uuid;
-use zip::ZipArchive;
 
 const SETTINGS_DOWNLOAD_PROGRESS_CHANNEL: &str = "settings:download-assets-progress";
 const TASK_PROGRESS_CHANNEL: &str = "task-progress";
@@ -43,7 +42,6 @@ const MODEL_DOWNLOADS: [(&str, &str); 3] = [
         "https://huggingface.co/keejkrej/resnet18/resolve/main/preprocessor_config.json",
     ),
 ];
-const FFMPEG_ZIP_URL: &str = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip";
 
 #[derive(Serialize, Deserialize, Clone)]
 struct AssayRecord {
@@ -463,6 +461,7 @@ struct TiffRecord {
 struct AssetStatus {
     model_path: PathBuf,
     ffmpeg_path: PathBuf,
+    ffmpeg_present: bool,
     missing: Vec<String>,
     all_present: bool,
 }
@@ -1677,12 +1676,7 @@ fn chrono_now() -> String {
     format!("{}.{:09}Z", elapsed.as_secs(), elapsed.subsec_nanos())
 }
 
-fn download_file(url: &str, destination: &Path) -> Result<(), String> {
-    let response = blocking::get(url).map_err(|error| error.to_string())?;
-    if !response.status().is_success() {
-        return Err(format!("request failed: {}", response.status()));
-    }
-
+fn download_model_file(url: &str, destination: &Path) -> Result<(), String> {
     let parent = destination
         .parent()
         .ok_or_else(|| "invalid destination path".to_string())?;
@@ -1691,43 +1685,16 @@ fn download_file(url: &str, destination: &Path) -> Result<(), String> {
     let tempfile = destination.with_extension("tmp");
     {
         let mut out = File::create(&tempfile).map_err(|error| error.to_string())?;
-        let mut response = response;
-        std::io::copy(&mut response, &mut out).map_err(|error| error.to_string())?;
+        let mut response = ureq::get(url).call().map_err(|error| error.to_string())?;
+        std::io::copy(&mut response.body_mut().as_reader(), &mut out)
+            .map_err(|error| error.to_string())?;
     }
     fs::rename(&tempfile, destination).map_err(|error| error.to_string())?;
     Ok(())
 }
 
-fn extract_ffmpeg_executable(zip_path: &Path, destination: &Path) -> Result<(), String> {
-    let file = File::open(zip_path).map_err(|error| error.to_string())?;
-    let mut archive = ZipArchive::new(file).map_err(|error| error.to_string())?;
-    let mut found = false;
-    for index in 0..archive.len() {
-        let mut entry = archive.by_index(index).map_err(|error| error.to_string())?;
-        if entry.is_dir() {
-            continue;
-        }
-        let name = entry.name().to_ascii_lowercase();
-        if !name.ends_with("ffmpeg.exe") {
-            continue;
-        }
-        if let Some(parent) = destination.parent() {
-            fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-        }
-        let mut output = File::create(destination).map_err(|error| error.to_string())?;
-        std::io::copy(&mut entry, &mut output).map_err(|error| error.to_string())?;
-        found = true;
-        break;
-    }
-    if found {
-        return Ok(());
-    }
-    Err("ffmpeg.exe not found in downloaded archive.".to_string())
-}
-
 fn download_default_assets() -> Result<Vec<String>, String> {
     let model_dir = resolve_default_model_dir();
-    let ffmpeg_path = resolve_default_ffmpeg_path();
     let mut downloaded_files = Vec::new();
 
     for (name, url) in MODEL_DOWNLOADS.iter() {
@@ -1735,74 +1702,49 @@ fn download_default_assets() -> Result<Vec<String>, String> {
         if path.exists() {
             continue;
         }
-        download_file(url, &path)?;
+        download_model_file(url, &path)?;
         downloaded_files.push(path.to_string_lossy().to_string());
     }
 
-    if !cfg!(windows) {
-        return Ok(downloaded_files);
-    }
-    if ffmpeg_path.exists() {
-        return Ok(downloaded_files);
-    }
-
-    let archive = env::temp_dir().join(format!(
-        "lisca-ffmpeg-{}.zip",
-        chrono_now().replace(":", "-")
-    ));
-    download_file(FFMPEG_ZIP_URL, &archive)?;
-    let ffmpeg_parent = ffmpeg_path
-        .parent()
-        .ok_or_else(|| "invalid ffmpeg path".to_string())?;
-    fs::create_dir_all(ffmpeg_parent).map_err(|error| error.to_string())?;
-    extract_ffmpeg_executable(&archive, &ffmpeg_path)?;
-    downloaded_files.push(ffmpeg_path.to_string_lossy().to_string());
-    let _ = fs::remove_file(&archive);
     Ok(downloaded_files)
 }
 
 #[tauri::command]
 fn settings_download_assets(app: AppHandle) -> Value {
     emit_download_progress(&app, "start", 0.0, "starting");
-    let ffmpeg_path = resolve_default_ffmpeg_path();
     emit_download_progress(&app, "model", 0.2, "checking model files");
+    let status = resolve_asset_status();
+    if !status.ffmpeg_present {
+        let error = "Bundled ffmpeg is missing. Reinstall lisca-desktop.";
+        emit_download_progress(&app, "error", 1.0, error);
+        return json!({
+            "ok": false,
+            "error": error,
+        });
+    }
+
     match download_default_assets() {
         Ok(downloaded_files) => {
             emit_download_progress(&app, "done", 1.0, "done");
             let status = resolve_asset_status();
-            if status.all_present || !cfg!(windows) {
-                if !cfg!(windows) && !status.all_present {
-                    return json!({
-                        "ok": false,
-                        "modelDir": status.model_path.to_string_lossy(),
-                        "ffmpegPath": ffmpeg_path.to_string_lossy(),
-                        "downloadedFiles": downloaded_files,
-                        "error": "ffmpeg.exe download is only supported on Windows.",
-                    });
-                }
+            if status.all_present {
                 return json!({
                     "ok": true,
-                    "modelDir": status.model_path.to_string_lossy(),
+                    "modelDir": resolve_default_model_dir().to_string_lossy(),
                     "ffmpegPath": status.ffmpeg_path.to_string_lossy(),
+                    "ffmpegPresent": status.ffmpeg_present,
                     "downloadedFiles": downloaded_files,
                 });
             }
             json!({
                 "ok": false,
-                "modelDir": status.model_path.to_string_lossy(),
-                "ffmpegPath": status.ffmpeg_path.to_string_lossy(),
-                "downloadedFiles": downloaded_files,
                 "error": "required assets are missing",
             })
         }
         Err(error) => {
             emit_download_progress(&app, "error", 1.0, &error);
-            let status = resolve_asset_status();
             json!({
                 "ok": false,
-                "modelDir": status.model_path.to_string_lossy(),
-                "ffmpegPath": status.ffmpeg_path.to_string_lossy(),
-                "downloadedFiles": [],
                 "error": error,
             })
         }
@@ -1817,6 +1759,7 @@ fn settings_get_asset_status() -> Value {
         "ok": true,
         "modelPath": status.model_path.to_string_lossy(),
         "ffmpegPath": status.ffmpeg_path.to_string_lossy(),
+        "ffmpegPresent": status.ffmpeg_present,
         "missing": status.missing,
         "allPresent": all_present,
     })
@@ -1831,42 +1774,37 @@ fn resolve_default_model_dir() -> PathBuf {
 }
 
 fn resolve_default_ffmpeg_path() -> PathBuf {
-    if cfg!(windows) {
-        dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".lisca")
-            .join("bin")
-            .join("ffmpeg.exe")
-    } else {
-        dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".lisca")
-            .join("bin")
-            .join("ffmpeg")
-    }
+    sidecar_path().unwrap_or_else(|_| {
+        if cfg!(windows) {
+            PathBuf::from("ffmpeg.exe")
+        } else {
+            PathBuf::from("ffmpeg")
+        }
+    })
 }
 
 fn resolve_asset_status() -> AssetStatus {
-    let model_path = resolve_default_model_dir().join("model.onnx");
+    let model_dir = resolve_default_model_dir();
+    let model_path = model_dir.join("model.onnx");
     let ffmpeg_path = resolve_default_ffmpeg_path();
     let mut status = AssetStatus {
         model_path,
         ffmpeg_path,
+        ffmpeg_present: false,
         missing: Vec::new(),
         all_present: true,
     };
-    if !status.model_path.exists() {
-        status.all_present = false;
-        status
-            .missing
-            .push(status.model_path.to_string_lossy().to_string());
+
+    for (name, _) in MODEL_DOWNLOADS.iter() {
+        let path = model_dir.join(name);
+        if path.exists() {
+            continue;
+        }
+        status.missing.push(path.to_string_lossy().to_string());
     }
-    if !status.ffmpeg_path.exists() && cfg!(windows) {
-        status.all_present = false;
-        status
-            .missing
-            .push(status.ffmpeg_path.to_string_lossy().to_string());
-    }
+
+    status.ffmpeg_present = status.ffmpeg_path.exists();
+    status.all_present = status.missing.is_empty() && status.ffmpeg_present;
     status
 }
 

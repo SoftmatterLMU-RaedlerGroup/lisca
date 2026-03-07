@@ -57,6 +57,7 @@ export default function SetupPage() {
   const [settingsMessage, setSettingsMessage] = useState<string | null>(null);
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const [missingAssets, setMissingAssets] = useState<string[]>([]);
+  const [ffmpegPresent, setFfmpegPresent] = useState<boolean | null>(null);
   const [assetStatusError, setAssetStatusError] = useState<string | null>(null);
   const [assetPaths, setAssetPaths] = useState<{ modelPath: string; ffmpegPath: string } | null>(null);
   const [assetDownloadProgress, setAssetDownloadProgress] = useState(0);
@@ -85,11 +86,13 @@ export default function SetupPage() {
       if (!status.ok) {
         setAssetStatusError(status.error);
         setMissingAssets([]);
+        setFfmpegPresent(null);
         setAssetPaths(null);
         return;
       }
       setAssetStatusError(null);
       setMissingAssets(status.missing);
+      setFfmpegPresent(status.ffmpegPresent);
       setAssetPaths({
         modelPath: status.modelPath,
         ffmpegPath: status.ffmpegPath,
@@ -97,6 +100,7 @@ export default function SetupPage() {
     } catch (err) {
       setAssetStatusError(err instanceof Error ? err.message : String(err));
       setMissingAssets([]);
+      setFfmpegPresent(null);
       setAssetPaths(null);
     }
   }, []);
@@ -482,27 +486,32 @@ export default function SetupPage() {
   }, [canSave, channelNames, classificationOptions, date, editingAssayId, folder, loadAssays, name, navigate, samples, type]);
 
   const handleDownloadAssets = useCallback(async () => {
+    if (ffmpegPresent === false) {
+      setSettingsError("Bundled ffmpeg is missing. Reinstall lisca-desktop.");
+      return;
+    }
     setDownloadingAssets(true);
     setSettingsError(null);
     setSettingsMessage(null);
     setAssetDownloadProgress(0);
-    setAssetDownloadMessage("Starting asset download...");
+    setAssetDownloadMessage("Starting model download...");
     try {
       const result = await api.settings.downloadAssets();
       if (!result.ok) {
         setSettingsError(result.error);
+        await refreshAssetStatus();
         return;
       }
       setAssetDownloadProgress(1);
       setAssetDownloadMessage(
         result.downloadedFiles.length > 0
-          ? "Assets downloaded successfully."
-          : "All required assets are already present.",
+          ? "Model files downloaded successfully."
+          : "All model files are already present.",
       );
       setSettingsMessage(
         result.downloadedFiles.length > 0
-          ? `Downloaded ${result.downloadedFiles.length} missing asset${result.downloadedFiles.length > 1 ? "s" : ""}.`
-          : "All required assets are already present.",
+          ? `Downloaded ${result.downloadedFiles.length} missing model file${result.downloadedFiles.length > 1 ? "s" : ""}.`
+          : "All model files are already present.",
       );
       await refreshAssetStatus();
     } catch (err) {
@@ -510,7 +519,9 @@ export default function SetupPage() {
     } finally {
       setDownloadingAssets(false);
     }
-  }, [refreshAssetStatus]);
+  }, [ffmpegPresent, refreshAssetStatus]);
+
+  const settingsNeedsAttention = missingAssets.length > 0 || ffmpegPresent === false;
 
   return (
     <AppContainer className="max-w-4xl">
@@ -520,8 +531,8 @@ export default function SetupPage() {
           <div className="flex items-center gap-2">
             <Button
               size="sm"
-              variant={missingAssets.length > 0 ? "destructive" : "outline"}
-              className={cn("relative", missingAssets.length > 0 && "pr-6")}
+              variant={settingsNeedsAttention ? "destructive" : "outline"}
+              className={cn("relative", settingsNeedsAttention && "pr-6")}
               onClick={() => {
                 setSettingsMessage(null);
                 setSettingsError(null);
@@ -534,7 +545,7 @@ export default function SetupPage() {
               title="settings"
             >
               settings
-              {missingAssets.length > 0 && (
+              {settingsNeedsAttention && (
                 <span className="absolute -right-1 -top-1 inline-flex size-4 items-center justify-center rounded-full border border-background bg-destructive text-[10px] font-semibold text-white">
                   !
                 </span>
@@ -694,6 +705,9 @@ export default function SetupPage() {
           )}
 
           {assetStatusError && <p className="text-sm text-destructive">{assetStatusError}</p>}
+          {ffmpegPresent === false && (
+            <p className="text-sm text-destructive">Bundled ffmpeg is missing. Reinstall lisca-desktop.</p>
+          )}
           {missingAssets.length > 0 ? (
             <div className="space-y-1 rounded-md border border-destructive/40 bg-background p-3 text-xs text-destructive">
               {missingAssets.map((item) => (
@@ -702,14 +716,14 @@ export default function SetupPage() {
                 </p>
               ))}
             </div>
-          ) : (
+          ) : ffmpegPresent !== false ? (
             <p className="text-sm text-emerald-600">all required assets are present.</p>
-          )}
+          ) : null}
 
           {(downloadingAssets || assetDownloadProgress > 0) && (
             <div className="space-y-2 rounded-md border bg-muted/25 p-3">
               <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
-                <p className="truncate">{assetDownloadMessage ?? "downloading assets..."}</p>
+                <p className="truncate">{assetDownloadMessage ?? "downloading model files..."}</p>
                 <span>{Math.round(assetDownloadProgress * 100)}%</span>
               </div>
               <div className="h-2 overflow-hidden rounded-full bg-muted">
@@ -728,10 +742,13 @@ export default function SetupPage() {
             <Button variant="outline" onClick={() => setSettingsOpen(false)}>
               close
             </Button>
-            <Button disabled={downloadingAssets} onClick={() => void handleDownloadAssets()}>
+            <Button
+              disabled={downloadingAssets || missingAssets.length === 0 || ffmpegPresent === false}
+              onClick={() => void handleDownloadAssets()}
+            >
               {downloadingAssets
                 ? `downloading... ${Math.round(assetDownloadProgress * 100)}%`
-                : "download model + ffmpeg"}
+                : "download model files"}
             </Button>
           </DialogFooter>
         </DialogContent>

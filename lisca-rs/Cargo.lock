@@ -658,6 +658,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ffmpeg-sidecar"
+version = "2.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f076483fb6efcf02e4abcf3e9388d30123346f85b9a96e8fe834718951b945ed"
+dependencies = [
+ "anyhow",
+]
+
+[[package]]
 name = "find-msvc-tools"
 version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1072,6 +1081,7 @@ dependencies = [
  "cellpose-rs",
  "cellsam-rs",
  "clap",
+ "ffmpeg-sidecar",
  "image",
  "nd2-rs",
  "ndarray",
