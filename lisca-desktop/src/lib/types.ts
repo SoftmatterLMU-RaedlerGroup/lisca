@@ -94,10 +94,21 @@ export type AutoRegisterResponse = AutoRegisterSuccess | AutoRegisterFailure;
 
 export type TaskStatus = "running" | "succeeded" | "failed";
 
+export type TaskProgressKind = "start" | "update" | "finish" | "error";
+
 export interface TaskProgressEvent {
+  kind: TaskProgressKind;
   progress: number;
   message: string;
+  step?: string;
+  current?: number;
+  total?: number;
   timestamp: string;
+}
+
+export interface TaskProgressPayload {
+  taskId: string;
+  event: TaskProgressEvent;
 }
 
 export interface TaskRecord {

@@ -9,7 +9,6 @@ use std::fs;
 use std::path::Path;
 
 use crate::cli::commands::killing::KillingArgs;
-use crate::common::progress;
 use crate::domain::schema;
 use crate::io::zarr;
 
@@ -247,7 +246,7 @@ pub fn run(
         ));
     }
     fs::write(&args.output, csv)?;
-    progress::emit(
+    progress_cb(
         1.0,
         &format!("Wrote {} rows to {}", rows.len(), args.output),
     );

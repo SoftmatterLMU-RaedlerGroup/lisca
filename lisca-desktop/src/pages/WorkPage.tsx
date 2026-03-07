@@ -26,6 +26,7 @@ import type {
   FolderScan,
   ReadImageResponse,
   TaskRecord,
+  TaskProgressEvent,
 } from "@/lib/types";
 
 interface ImageFrame {
@@ -72,6 +73,46 @@ function summarizeTaskRequest(task: TaskRecord): string {
     grid != null ? grid : null,
   ].filter((value): value is string => value != null);
   return parts.length > 0 ? parts.join(" | ") : "no request details";
+}
+
+function clampTaskProgress(progress: number): number {
+  return Math.max(0, Math.min(1, progress));
+}
+
+function latestTaskProgress(task: TaskRecord): TaskProgressEvent | null {
+  return task.progress_events[0] ?? null;
+}
+
+function makeTaskProgressEvent(
+  kind: TaskProgressEvent["kind"],
+  progress: number,
+  message: string,
+  timestamp = new Date().toISOString(),
+): TaskProgressEvent {
+  return {
+    kind,
+    progress: clampTaskProgress(progress),
+    message,
+    timestamp,
+  };
+}
+
+function applyTaskProgress(task: TaskRecord, event: TaskProgressEvent): TaskRecord {
+  const status =
+    event.kind === "finish"
+      ? "succeeded"
+      : event.kind === "error"
+        ? "failed"
+        : task.status;
+  return {
+    ...task,
+    status,
+    started_at: event.kind === "start" ? (task.started_at ?? event.timestamp) : task.started_at,
+    finished_at:
+      event.kind === "finish" || event.kind === "error" ? event.timestamp : task.finished_at,
+    error: event.kind === "error" ? event.message : task.error,
+    progress_events: [event],
+  };
 }
 
 function drawPatternGrid(
@@ -353,6 +394,15 @@ export default function WorkPage() {
   useEffect(() => {
     void refreshTasks();
   }, [refreshTasks]);
+
+  useEffect(() => {
+    const unsubscribe = api.tasks.onProgress(({ taskId, event }) => {
+      setTasks((prev) =>
+        prev.map((task) => (task.id === taskId ? applyTaskProgress(task, event) : task)),
+      );
+    });
+    return unsubscribe;
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -864,15 +914,10 @@ export default function WorkPage() {
       result: null,
       error: null,
       logs: [],
-      progress_events: [
-        {
-          progress: 0,
-          message: "Running auto-detect",
-          timestamp,
-        },
-      ],
+      progress_events: [makeTaskProgressEvent("start", 0, "Running auto-detect", timestamp)],
     };
     setAutoDetectingGrid(shape);
+    setShowTaskModal(true);
     try {
       await api.tasks.insert(queuedTask);
       setTasks((prev) => [queuedTask, ...prev.filter((task) => task.id !== queuedTask.id)]);
@@ -903,12 +948,12 @@ export default function WorkPage() {
                     } as Record<string, unknown>)
                   : null,
                 progress_events: [
-                  ...task.progress_events,
-                  {
-                    progress: result.ok ? 1 : 0,
-                    message: result.ok ? "Auto-detect completed" : `Auto-detect failed: ${result.error}`,
-                    timestamp: finishedAt,
-                  },
+                  makeTaskProgressEvent(
+                    result.ok ? "finish" : "error",
+                    result.ok ? 1 : latestTaskProgress(task)?.progress ?? 0,
+                    result.ok ? "Auto-detect completed" : `Auto-detect failed: ${result.error}`,
+                    finishedAt,
+                  ),
                 ],
               }
             : task,
@@ -1005,14 +1050,11 @@ export default function WorkPage() {
       result: null,
       error: null,
       logs: [],
-      progress_events: [{
-        progress: 0,
-        message: "Running crop",
-        timestamp,
-      }],
+      progress_events: [makeTaskProgressEvent("start", 0, "Running crop", timestamp)],
     };
 
     setDashboardContextMenu(null);
+    setShowTaskModal(true);
     try {
       await api.tasks.insert(task);
       setTasks((prev) => [task, ...prev.filter((item) => item.id !== task.id)]);
@@ -1039,12 +1081,12 @@ export default function WorkPage() {
                 error: result.ok ? null : result.error,
                 result: result.ok ? { output: result.output } : null,
                 progress_events: [
-                  ...item.progress_events,
-                  {
-                    progress: result.ok ? 1 : 0,
-                    message: result.ok ? "Crop completed" : `Crop failed: ${result.error}`,
-                    timestamp: finishedAt,
-                  },
+                  makeTaskProgressEvent(
+                    result.ok ? "finish" : "error",
+                    result.ok ? 1 : latestTaskProgress(item)?.progress ?? 0,
+                    result.ok ? "Crop completed" : `Crop failed: ${result.error}`,
+                    finishedAt,
+                  ),
                 ],
               }
             : item,
@@ -1087,14 +1129,11 @@ export default function WorkPage() {
       result: null,
       error: null,
       logs: [],
-      progress_events: [{
-        progress: 0,
-        message: "Running killing inference",
-        timestamp,
-      }],
+      progress_events: [makeTaskProgressEvent("start", 0, "Running killing inference", timestamp)],
     };
 
     setDashboardContextMenu(null);
+    setShowTaskModal(true);
     try {
       await api.tasks.insert(task);
       setTasks((prev) => [task, ...prev.filter((item) => item.id !== task.id)]);
@@ -1125,14 +1164,14 @@ export default function WorkPage() {
                     }
                   : null,
                 progress_events: [
-                  ...item.progress_events,
-                  {
-                    progress: result.ok ? 1 : 0,
-                    message: result.ok
+                  makeTaskProgressEvent(
+                    result.ok ? "finish" : "error",
+                    result.ok ? 1 : latestTaskProgress(item)?.progress ?? 0,
+                    result.ok
                       ? "Killing inference completed"
                       : `Killing inference failed: ${result.error}`,
-                    timestamp: finishedAt,
-                  },
+                    finishedAt,
+                  ),
                 ],
               }
             : item,
@@ -1276,18 +1315,43 @@ export default function WorkPage() {
                         ) : tasks.length === 0 ? (
                           <p className="text-xs text-muted-foreground">no tasks yet</p>
                         ) : (
-                          tasks.map((task) => (
-                            <div key={task.id} className="space-y-1 rounded-md border border-border/70 p-2">
-                              <div className="flex items-center justify-between gap-2">
-                                <span className="truncate text-xs font-medium">{task.kind}</span>
-                                <span className={cn("text-xs font-medium", taskStatusClass(task.status))}>
-                                  {task.status}
-                                </span>
+                          tasks.map((task) => {
+                            const progress = latestTaskProgress(task);
+                            const progressPercent = Math.round((progress?.progress ?? 0) * 100);
+                            return (
+                              <div key={task.id} className="space-y-2 rounded-md border border-border/70 p-2">
+                                <div className="flex items-center justify-between gap-2">
+                                  <span className="truncate text-xs font-medium">{task.kind}</span>
+                                  <span className={cn("text-xs font-medium", taskStatusClass(task.status))}>
+                                    {task.status}
+                                  </span>
+                                </div>
+                                <p className="truncate text-[11px] text-muted-foreground">{summarizeTaskRequest(task)}</p>
+                                {progress && (
+                                  <div className="space-y-1">
+                                    <div className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
+                                      <span className="truncate">{progress.message}</span>
+                                      <span className="tabular-nums">{progressPercent}%</span>
+                                    </div>
+                                    <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+                                      <div
+                                        className={cn(
+                                          "h-full transition-[width] duration-200 ease-out",
+                                          task.status === "failed"
+                                            ? "bg-destructive"
+                                            : task.status === "succeeded"
+                                              ? "bg-emerald-600"
+                                              : "bg-amber-500",
+                                        )}
+                                        style={{ width: `${progressPercent}%` }}
+                                      />
+                                    </div>
+                                  </div>
+                                )}
+                                {task.error && <p className="line-clamp-2 text-[11px] text-destructive">{task.error}</p>}
                               </div>
-                              <p className="truncate text-[11px] text-muted-foreground">{summarizeTaskRequest(task)}</p>
-                              {task.error && <p className="line-clamp-2 text-[11px] text-destructive">{task.error}</p>}
-                            </div>
-                          ))
+                            );
+                          })
                         )}
                       </div>
                     </div>

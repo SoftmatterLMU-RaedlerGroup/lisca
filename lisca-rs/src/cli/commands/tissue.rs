@@ -23,4 +23,6 @@ pub struct TissueArgs {
     pub batch_size: usize,
     #[arg(long)]
     pub cpu: bool,
+    #[arg(long, default_value_t = false)]
+    pub no_progress: bool,
 }

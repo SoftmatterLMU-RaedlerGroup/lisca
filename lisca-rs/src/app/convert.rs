@@ -8,7 +8,10 @@ use crate::cli::commands::convert::ConvertArgs;
 use crate::common::slices;
 use crate::io::nd2::Nd2File;
 
-pub fn run(args: ConvertArgs, progress: impl Fn(f64, &str)) -> Result<(), Box<dyn std::error::Error>> {
+pub fn run(
+    args: ConvertArgs,
+    progress: impl Fn(f64, &str),
+) -> Result<(), Box<dyn std::error::Error>> {
     let output_path = Path::new(&args.output);
 
     let mut nd2 = Nd2File::open(&args.input)?;
@@ -57,7 +60,10 @@ pub fn run(args: ConvertArgs, progress: impl Fn(f64, &str)) -> Result<(), Box<dy
 
                     done += 1;
                     if total > 0 {
-                        progress(done as f64 / total as f64, &format!("Writing TIFFs {}/{}", done, total));
+                        progress(
+                            done as f64 / total as f64,
+                            &format!("Writing TIFFs {}/{}", done, total),
+                        );
                     }
                 }
             }
